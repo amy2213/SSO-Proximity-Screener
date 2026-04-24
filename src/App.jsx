@@ -62,6 +62,148 @@ function buildUsdaRuralQueryUrl(lat, lon, layerId = USDA_RD_LAYER_ID) {
   return `${USDA_RD_MAPSERVER_BASE}/${layerId}/query?${params.toString()}`;
 }
 
+const CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress";
+const GEOCODE_DELAY_MS = 200;
+
+function buildFullAddress(site) {
+  const street = (site?.street || "").toString().trim();
+  const city = (site?.city || "").toString().trim();
+  const state = (site?.state || "").toString().trim();
+  const zip = (site?.zip || "").toString().trim();
+  const stateZip = [state, zip].filter(Boolean).join(" ");
+  return [street, city, stateZip].filter(Boolean).join(", ");
+}
+
+function buildCensusGeocodeUrl(address) {
+  const params = new URLSearchParams({
+    address,
+    benchmark: "Public_AR_Current",
+    format: "json",
+  });
+  return `${CENSUS_GEOCODER_URL}?${params.toString()}`;
+}
+
+async function geocodeAddress(site) {
+  const nowIso = () => new Date().toISOString();
+  const street = (site?.street || "").toString().trim();
+  const city = (site?.city || "").toString().trim();
+  const state = (site?.state || "").toString().trim();
+  const zip = (site?.zip || "").toString().trim();
+
+  if (!street || !city || !state || !zip) {
+    return {
+      lat: "",
+      lon: "",
+      geocodeStatus: "Needs Address",
+      geocodeSource: "",
+      matchedAddress: "",
+      geocodeConfidence: "",
+      geocodeNotes: "Missing required address fields",
+      geocodedAt: nowIso(),
+    };
+  }
+
+  const address = buildFullAddress(site);
+
+  try {
+    const response = await fetch(buildCensusGeocodeUrl(address));
+
+    if (!response.ok) {
+      throw new Error(`Census geocoder HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const matches = Array.isArray(data?.result?.addressMatches) ? data.result.addressMatches : [];
+
+    if (matches.length === 0) {
+      return {
+        lat: "",
+        lon: "",
+        geocodeStatus: "No Match",
+        geocodeSource: "US Census Geocoder",
+        matchedAddress: "",
+        geocodeConfidence: "",
+        geocodeNotes: "No geocode match returned",
+        geocodedAt: nowIso(),
+      };
+    }
+
+    const first = matches[0];
+    const coords = first?.coordinates || {};
+    const lat = Number(coords.y);
+    const lon = Number(coords.x);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return {
+        lat: "",
+        lon: "",
+        geocodeStatus: "Error",
+        geocodeSource: "US Census Geocoder",
+        matchedAddress: first?.matchedAddress || "",
+        geocodeConfidence: "",
+        geocodeNotes: "Geocoder returned invalid coordinates",
+        geocodedAt: nowIso(),
+      };
+    }
+
+    if (matches.length > 1) {
+      return {
+        lat,
+        lon,
+        geocodeStatus: "Needs Review",
+        geocodeSource: "US Census Geocoder",
+        matchedAddress: first?.matchedAddress || "",
+        geocodeConfidence: "Multiple Matches",
+        geocodeNotes: "Multiple matches returned; verify coordinates",
+        geocodedAt: nowIso(),
+      };
+    }
+
+    return {
+      lat,
+      lon,
+      geocodeStatus: "Geocoded",
+      geocodeSource: "US Census Geocoder",
+      matchedAddress: first?.matchedAddress || "",
+      geocodeConfidence: "Matched",
+      geocodeNotes: "",
+      geocodedAt: nowIso(),
+    };
+  } catch (error) {
+    return {
+      lat: "",
+      lon: "",
+      geocodeStatus: "Error",
+      geocodeSource: "US Census Geocoder",
+      matchedAddress: "",
+      geocodeConfidence: "",
+      geocodeNotes: error instanceof Error ? error.message : "Unknown geocoder error",
+      geocodedAt: nowIso(),
+    };
+  }
+}
+
+function getGeocodeBadgeColor(status) {
+  switch (status) {
+    case "Geocoded":
+      return "green";
+    case "Manual Coordinates":
+      return "navy";
+    case "Needs Review":
+    case "Needs Address":
+      return "yellow";
+    case "No Match":
+    case "Error":
+      return "red";
+    default:
+      return "gray";
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function queryUsdaRuralStatus(lat, lon) {
   if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) {
     throw new Error("Valid latitude and longitude are required.");
@@ -151,9 +293,15 @@ const EMPTY_SITE = {
   serviceModel: "Congregate",
   mobile: "N",
   notes: "",
+  geocodeStatus: "",
+  geocodeSource: "",
+  matchedAddress: "",
+  geocodeConfidence: "",
+  geocodeNotes: "",
+  geocodedAt: "",
 };
 
-const SAMPLE = [
+const SAMPLE = ([
   {
     id: "SSO-001",
     ce: "Community Food Services",
@@ -304,7 +452,15 @@ const SAMPLE = [
     mobile: "N",
     notes: "Duplicate of SSO-001 address",
   },
-];
+]).map((s) => ({
+  ...s,
+  geocodeStatus: hasValidCoords(s) ? "Manual Coordinates" : "",
+  geocodeSource: "",
+  matchedAddress: "",
+  geocodeConfidence: "",
+  geocodeNotes: "",
+  geocodedAt: "",
+}));
 
 // ── Styles ──
 const C = {
@@ -626,6 +782,14 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [ruralResults, setRuralResults] = useState({});
   const [ruralBusy, setRuralBusy] = useState(false);
+  const [geocodeBusy, setGeocodeBusy] = useState(false);
+  const [geocodeProgress, setGeocodeProgress] = useState({
+    queued: 0,
+    completed: 0,
+    geocoded: 0,
+    issues: 0,
+    statusText: "",
+  });
   const fileRef = useRef();
 
   const fullAddr = useCallback((s) => `${s.street}, ${s.city}, ${s.state} ${s.zip}`.trim(), []);
@@ -815,6 +979,12 @@ export default function App() {
     "Service Model",
     "Mobile Route Stop",
     "Notes",
+    "Geocode Status",
+    "Geocode Source",
+    "Matched Address",
+    "Geocode Confidence",
+    "Geocode Notes",
+    "Geocoded At",
   ];
 
   const exportSites = () => {
@@ -832,6 +1002,12 @@ export default function App() {
       "Service Model": s.serviceModel,
       "Mobile Route Stop": s.mobile,
       Notes: s.notes,
+      "Geocode Status": s.geocodeStatus || "",
+      "Geocode Source": s.geocodeSource || "",
+      "Matched Address": s.matchedAddress || "",
+      "Geocode Confidence": s.geocodeConfidence || "",
+      "Geocode Notes": s.geocodeNotes || "",
+      "Geocoded At": s.geocodedAt || "",
     }));
 
     exportCSV(rows, siteHeaders, "sso_sites.csv");
@@ -921,6 +1097,12 @@ export default function App() {
         "service model": ["service model", "service"],
         "mobile route stop": ["mobile route stop", "mobile", "bus stop"],
         notes: ["notes", "note"],
+        "geocode status": ["geocode status"],
+        "geocode source": ["geocode source"],
+        "matched address": ["matched address"],
+        "geocode confidence": ["geocode confidence"],
+        "geocode notes": ["geocode notes"],
+        "geocoded at": ["geocoded at"],
       };
 
       const findValue = (values, key) => {
@@ -948,6 +1130,12 @@ export default function App() {
             serviceModel: findValue(vals, "service model") || "Congregate",
             mobile: (findValue(vals, "mobile route stop") || "N").toUpperCase().startsWith("Y") ? "Y" : "N",
             notes: findValue(vals, "notes"),
+            geocodeStatus: findValue(vals, "geocode status") || "",
+            geocodeSource: findValue(vals, "geocode source") || "",
+            matchedAddress: findValue(vals, "matched address") || "",
+            geocodeConfidence: findValue(vals, "geocode confidence") || "",
+            geocodeNotes: findValue(vals, "geocode notes") || "",
+            geocodedAt: findValue(vals, "geocoded at") || "",
           };
         })
         .filter((s) => s.id.trim())
@@ -1004,6 +1192,121 @@ export default function App() {
   const clearRuralResults = () => {
     setRuralResults({});
   };
+
+  const geocodeSites = useCallback(
+    async ({ mode = "missing" } = {}) => {
+      const allActive = sites.filter((s) => s.id && s.id.trim());
+
+      if (mode === "missing") {
+        setSites((prev) =>
+          prev.map((s) => {
+            if (!s.id || !s.id.trim()) return s;
+            if (hasValidCoords(s) && !s.geocodeStatus) {
+              return { ...s, geocodeStatus: "Manual Coordinates" };
+            }
+            return s;
+          }),
+        );
+      }
+
+      const targets = allActive.filter((s) => {
+        if (mode === "all") return true;
+        return !hasValidCoords(s);
+      });
+
+      if (!targets.length) {
+        setGeocodeProgress({
+          queued: 0,
+          completed: 0,
+          geocoded: 0,
+          issues: 0,
+          statusText: "No sites needed geocoding.",
+        });
+        return;
+      }
+
+      setGeocodeBusy(true);
+      setGeocodeProgress({
+        queued: targets.length,
+        completed: 0,
+        geocoded: 0,
+        issues: 0,
+        statusText: `Queued ${targets.length} site(s) for geocoding`,
+      });
+
+      let completed = 0;
+      let geocodedCount = 0;
+      let issuesCount = 0;
+
+      for (const target of targets) {
+        setGeocodeProgress((prev) => ({
+          ...prev,
+          statusText: `Geocoding ${target.id || target.name || "site"} (${completed + 1} of ${targets.length})`,
+        }));
+
+        const result = await geocodeAddress(target);
+
+        setSites((prev) =>
+          prev.map((s) => {
+            if (s.id !== target.id) return s;
+            const next = {
+              ...s,
+              geocodeStatus: result.geocodeStatus,
+              geocodeSource: result.geocodeSource,
+              matchedAddress: result.matchedAddress,
+              geocodeConfidence: result.geocodeConfidence,
+              geocodeNotes: result.geocodeNotes,
+              geocodedAt: result.geocodedAt,
+            };
+            if (Number.isFinite(Number(result.lat)) && Number.isFinite(Number(result.lon))) {
+              next.lat = result.lat;
+              next.lon = result.lon;
+            }
+            return next;
+          }),
+        );
+
+        completed += 1;
+        if (result.geocodeStatus === "Geocoded") {
+          geocodedCount += 1;
+        } else {
+          issuesCount += 1;
+        }
+
+        setGeocodeProgress({
+          queued: targets.length,
+          completed,
+          geocoded: geocodedCount,
+          issues: issuesCount,
+          statusText:
+            completed === targets.length
+              ? `Done: ${geocodedCount} geocoded, ${issuesCount} needing attention.`
+              : `Geocoded ${completed} of ${targets.length}`,
+        });
+
+        if (completed < targets.length) {
+          await sleep(GEOCODE_DELAY_MS);
+        }
+      }
+
+      setGeocodeBusy(false);
+    },
+    [sites],
+  );
+
+  const geocodeMissingCoords = useCallback(() => geocodeSites({ mode: "missing" }), [geocodeSites]);
+
+  const regeocodeAll = useCallback(() => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Re-geocode every site? This can overwrite manually entered latitude and longitude.",
+      )
+    ) {
+      return;
+    }
+    geocodeSites({ mode: "all" });
+  }, [geocodeSites]);
 
   const updateLog = (idx, field, value) => {
     setLogs((prev) => {
@@ -1300,6 +1603,14 @@ export default function App() {
                 <button type="button" style={btnSecondary} onClick={clearSites}>
                   Clear
                 </button>
+                <button
+                  type="button"
+                  style={btnSecondary}
+                  onClick={geocodeMissingCoords}
+                  disabled={geocodeBusy || ruralBusy}
+                >
+                  {geocodeBusy ? "Geocoding..." : "Geocode Missing Coordinates"}
+                </button>
                 <button type="button" style={btnPrimary} onClick={addSite} disabled={sites.length >= MAX_SITE_ROWS}>
                   + Add Row
                 </button>
@@ -1442,6 +1753,22 @@ export default function App() {
             >
               <SectionTitle>Geocode &amp; Data Quality Checks</SectionTitle>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  style={btnPrimary}
+                  onClick={geocodeMissingCoords}
+                  disabled={geocodeBusy || ruralBusy}
+                >
+                  {geocodeBusy ? "Geocoding..." : "Geocode Missing Coordinates"}
+                </button>
+                <button
+                  type="button"
+                  style={btnSecondary}
+                  onClick={regeocodeAll}
+                  disabled={geocodeBusy || ruralBusy}
+                >
+                  Re-geocode All Addresses
+                </button>
                 <button type="button" style={btnSecondary} onClick={checkRuralForSites} disabled={ruralBusy}>
                   {ruralBusy ? "Checking USDA RD..." : "Check USDA RD Rural"}
                 </button>
@@ -1449,6 +1776,58 @@ export default function App() {
                   Clear Rural Results
                 </button>
               </div>
+            </div>
+
+            {(geocodeBusy || geocodeProgress.completed > 0 || geocodeProgress.statusText) && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: "10px 14px",
+                  background: C.goldLight,
+                  border: "1px solid #e8d8a0",
+                  borderRadius: 4,
+                  fontSize: 12,
+                  color: C.gray700,
+                  display: "flex",
+                  gap: 16,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                }}
+              >
+                <span>
+                  <strong>Queued:</strong> {geocodeProgress.queued}
+                </span>
+                <span>
+                  <strong>Completed:</strong> {geocodeProgress.completed}
+                </span>
+                <span>
+                  <strong>Geocoded:</strong> {geocodeProgress.geocoded}
+                </span>
+                <span>
+                  <strong>Issues:</strong> {geocodeProgress.issues}
+                </span>
+                {geocodeProgress.statusText && (
+                  <span style={{ color: C.gray500 }}>{geocodeProgress.statusText}</span>
+                )}
+              </div>
+            )}
+
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 14px",
+                background: C.gray50,
+                border: `1px solid ${C.gray200}`,
+                borderRadius: 4,
+                fontSize: 11,
+                color: C.gray700,
+                lineHeight: 1.5,
+              }}
+            >
+              <strong>Geocoding:</strong> addresses are resolved with the U.S. Census Geocoder (no API key required).
+              Geocoded coordinates are a screening aid only. Review any result marked <em>Needs Review</em>,{" "}
+              <em>No Match</em>, or <em>Error</em> before relying on it — Census matching may not resolve bus stops,
+              intersections, informal pickup points, PO boxes, or ambiguous rural locations accurately.
             </div>
             <div style={tableWrap}>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
@@ -1464,6 +1843,10 @@ export default function App() {
                     <Th>Invalid Coords</Th>
                     <Th>Dup Address</Th>
                     <Th>Dup Coords</Th>
+                    <Th>Geocode Status</Th>
+                    <Th>Matched Address</Th>
+                    <Th>Geocode Source</Th>
+                    <Th>Geocode Notes</Th>
                     <Th>USDA RD Rural</Th>
                     <Th>RD Detail</Th>
                   </tr>
@@ -1490,6 +1873,25 @@ export default function App() {
                       <Td warn={g.dupAddr}>{g.dupAddr ? <Badge color="yellow">DUPLICATE</Badge> : ""}</Td>
                       <Td warn={g.dupCoord}>{g.dupCoord ? <Badge color="yellow">DUPLICATE</Badge> : ""}</Td>
                       <Td
+                        danger={g.geocodeStatus === "No Match" || g.geocodeStatus === "Error"}
+                        warn={g.geocodeStatus === "Needs Review" || g.geocodeStatus === "Needs Address"}
+                      >
+                        {g.geocodeStatus ? (
+                          <Badge color={getGeocodeBadgeColor(g.geocodeStatus)}>
+                            {g.geocodeStatus.toUpperCase()}
+                          </Badge>
+                        ) : (
+                          <Badge color="gray">NOT CHECKED</Badge>
+                        )}
+                      </Td>
+                      <Td style={{ fontSize: 11, maxWidth: 260, wordBreak: "break-word" }}>
+                        {g.matchedAddress || ""}
+                      </Td>
+                      <Td style={{ fontSize: 11 }}>{g.geocodeSource || ""}</Td>
+                      <Td style={{ fontSize: 10, color: C.gray500, maxWidth: 240, wordBreak: "break-word" }}>
+                        {g.geocodeNotes || ""}
+                      </Td>
+                      <Td
                         danger={ruralResults[g.id]?.status === "Not Rural" || ruralResults[g.id]?.status === "Error"}
                         warn={ruralResults[g.id]?.status === "Checking"}
                       >
@@ -1509,7 +1911,7 @@ export default function App() {
                   ))}
                   {geocodeFlags.length === 0 && (
                     <tr>
-                      <Td colSpan={12} style={{ textAlign: "center", color: C.gray500, padding: 20 }}>
+                      <Td colSpan={16} style={{ textAlign: "center", color: C.gray500, padding: 20 }}>
                         No sites entered
                       </Td>
                     </tr>
@@ -1998,6 +2400,11 @@ export default function App() {
                 title: "Key Flags",
                 body:
                   "Missing Data: site lacks latitude or longitude; distance cannot be calculated.\nInvalid Coordinates: latitude or longitude is outside valid bounds.\nDuplicate Address: two or more sites share the same normalized address.\nDuplicate Coordinates: two or more sites share the same lat/lon pair.\nShared CE: both sites in a pair belong to the same Contracting Entity.",
+              },
+              {
+                title: "Address Geocoding",
+                body:
+                  "Enter addresses on the Site Input tab, then use Geocode Missing Coordinates (available on Site Input and Data Quality) to resolve latitude/longitude using the U.S. Census Geocoder. Manually entered coordinates are preserved and marked Manual Coordinates unless you choose Re-geocode All Addresses, which overwrites them after a confirmation prompt. Review any result marked Needs Review, No Match, or Error before using it. Census matching may not resolve bus stops, intersections, informal pickup points, PO boxes, or ambiguous rural locations accurately.",
               },
               {
                 title: "USDA RD Rural Check",
