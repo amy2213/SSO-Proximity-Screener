@@ -263,21 +263,35 @@ function haversine(lat1, lon1, lat2, lon2) {
 // ── Constants ──
 const SITE_TYPES = ["Open", "Restricted Open", "Closed Enrolled", "Camp", "Other"];
 const SERVICE_MODELS = ["Congregate", "Non-Congregate", "Hybrid", "Unknown"];
-const ISSUE_TYPES = [
-  "Missing Data",
-  "Conflict",
-  "Caution",
-  "Duplicate Address",
-  "Duplicate Coordinate",
+const LOCATION_TYPES = [
+  "Street Address",
+  "School",
+  "Community Site",
+  "Park/Public Facility",
+  "Intersection",
+  "Bus Stop",
+  "Mobile Route Stop",
+  "Manual Pin",
   "Other",
 ];
-const ACTIONS = [
-  "Reviewed",
-  "Returned for Correction",
-  "Escalated",
-  "Verified",
-  "No Action Needed",
+const NOTE_TYPES = [
+  "Address Check",
+  "Coordinate Check",
+  "Nearby Location",
+  "Public Dataset Lookup",
+  "Public Map Reference",
+  "Manual Verification",
 ];
+
+const PAIR_STATUS = {
+  WITHIN_2: "Within 2.0 mi",
+  VERIFY: "Verify 2.0-2.5 mi",
+  OK: "No proximity flag",
+  MISSING: "Missing Data",
+};
+
+const GLOBAL_DISCLAIMER =
+  "This tool is for location screening and data quality support only. It does not determine application completeness, eligibility, approval, denial, waiver requirements, or compliance status. All official review actions must be completed in approved agency systems using current policy and supervisor guidance.";
 
 const EMPTY_SITE = {
   id: "",
@@ -293,12 +307,20 @@ const EMPTY_SITE = {
   serviceModel: "Congregate",
   mobile: "N",
   notes: "",
+  locationType: "Street Address",
+  source: "Manual Entry",
+  sourceDataset: "",
+  sourceDatasetId: "",
+  sourceRecordId: "",
+  importedAt: "",
+  coordinateSource: "Manual",
   geocodeStatus: "",
   geocodeSource: "",
   matchedAddress: "",
   geocodeConfidence: "",
   geocodeNotes: "",
   geocodedAt: "",
+  rawRecord: null,
 };
 
 const SAMPLE = ([
@@ -454,12 +476,20 @@ const SAMPLE = ([
   },
 ]).map((s) => ({
   ...s,
+  locationType: s.mobile === "Y" ? "Mobile Route Stop" : "Street Address",
+  source: "Sample Data",
+  sourceDataset: "",
+  sourceDatasetId: "",
+  sourceRecordId: "",
+  importedAt: "",
+  coordinateSource: hasValidCoords(s) ? "Manual" : "",
   geocodeStatus: hasValidCoords(s) ? "Manual Coordinates" : "",
   geocodeSource: "",
   matchedAddress: "",
   geocodeConfidence: "",
   geocodeNotes: "",
   geocodedAt: "",
+  rawRecord: null,
 }));
 
 // ── Styles ──
@@ -728,13 +758,12 @@ function normalizeHeader(value) {
 
 const TABS = [
   "Dashboard",
-  "Site Input",
-  "Data Quality",
-  "Rural Check",
-  "Distance Pairs",
-  "Distance Matrix",
-  "Review Log",
-  "Instructions",
+  "Site Workspace",
+  "Geocode & QA",
+  "Nearby Sites",
+  "Reference Maps",
+  "Location Notes",
+  "Data Sources",
 ];
 
 function TabBar({ active, onChange }) {
@@ -852,10 +881,10 @@ export default function App() {
         const dist = haversine(a.lat, a.lon, b.lat, b.lon);
         const missingData = dist === null;
 
-        let status = "OK";
-        if (missingData) status = "Missing Data";
-        else if (dist < CONFLICT_MI) status = "Conflict";
-        else if (dist < CAUTION_MI) status = "Caution";
+        let status = PAIR_STATUS.OK;
+        if (missingData) status = PAIR_STATUS.MISSING;
+        else if (dist < CONFLICT_MI) status = PAIR_STATUS.WITHIN_2;
+        else if (dist < CAUTION_MI) status = PAIR_STATUS.VERIFY;
 
         result.push({
           id: `${a.id}-${b.id}`,
@@ -877,22 +906,32 @@ export default function App() {
   }, [activeSites, fullAddr]);
 
   const stats = useMemo(() => {
-    const conflicts = pairs.filter((p) => p.status === "Conflict");
-    const cautions = pairs.filter((p) => p.status === "Caution");
+    const within2 = pairs.filter((p) => p.status === PAIR_STATUS.WITHIN_2);
+    const verify = pairs.filter((p) => p.status === PAIR_STATUS.VERIFY);
+    const proximityFlags = within2.length + verify.length;
     const missingCoords = geocodeFlags.filter((g) => g.missingLat || g.missingLon);
     const invalidCoords = geocodeFlags.filter((g) => g.invalidCoord);
     const dupAddrs = geocodeFlags.filter((g) => g.dupAddr);
     const dupCoords = geocodeFlags.filter((g) => g.dupCoord);
-    const ruralChecked = activeSites.filter((s) => ruralResults[s.id]?.status).length;
-    const notRural = activeSites.filter((s) => ruralResults[s.id]?.status === "Not Rural").length;
+    const possibleDuplicates = geocodeFlags.filter((g) => g.dupAddr || g.dupCoord).length;
+    const referenceChecked = activeSites.filter((s) => ruralResults[s.id]?.status).length;
+    const manualEntries = activeSites.filter(
+      (s) => !s.source || s.source === "Manual Entry" || s.source === "Sample Data",
+    ).length;
+    const geocodedLocations = activeSites.filter((s) => s.geocodeStatus === "Geocoded").length;
+    const needsManualVerification = activeSites.filter((s) => {
+      if (!hasValidCoords(s)) return true;
+      const status = s.geocodeStatus;
+      return status === "Needs Review" || status === "Needs Address" || status === "No Match" || status === "Error";
+    }).length;
 
-    const conflictSiteIds = {};
-    conflicts.forEach((p) => {
-      conflictSiteIds[p.siteA.id] = (conflictSiteIds[p.siteA.id] || 0) + 1;
-      conflictSiteIds[p.siteB.id] = (conflictSiteIds[p.siteB.id] || 0) + 1;
+    const proximitySiteCounts = {};
+    [...within2, ...verify].forEach((p) => {
+      proximitySiteCounts[p.siteA.id] = (proximitySiteCounts[p.siteA.id] || 0) + 1;
+      proximitySiteCounts[p.siteB.id] = (proximitySiteCounts[p.siteB.id] || 0) + 1;
     });
 
-    const multiConflict = Object.entries(conflictSiteIds)
+    const multiNearby = Object.entries(proximitySiteCounts)
       .filter(([, count]) => count > 1)
       .sort((a, b) => b[1] - a[1]);
 
@@ -904,15 +943,19 @@ export default function App() {
     return {
       total: activeSites.length,
       totalPairs: pairs.length,
-      conflicts: conflicts.length,
-      cautions: cautions.length,
+      within2: within2.length,
+      verify: verify.length,
+      proximityFlags,
       missingCoords: missingCoords.length,
       invalidCoords: invalidCoords.length,
       dupAddrs: dupAddrs.length,
       dupCoords: dupCoords.length,
-      ruralChecked,
-      notRural,
-      multiConflict,
+      possibleDuplicates,
+      referenceChecked,
+      manualEntries,
+      geocodedLocations,
+      needsManualVerification,
+      multiNearby,
       closestPairs,
     };
   }, [activeSites, pairs, geocodeFlags, ruralResults]);
@@ -978,6 +1021,13 @@ export default function App() {
     "Site Type",
     "Service Model",
     "Mobile Route Stop",
+    "Location Type",
+    "Source",
+    "Source Dataset",
+    "Source Dataset ID",
+    "Source Record ID",
+    "Imported At",
+    "Coordinate Source",
     "Notes",
     "Geocode Status",
     "Geocode Source",
@@ -1001,6 +1051,13 @@ export default function App() {
       "Site Type": s.siteType,
       "Service Model": s.serviceModel,
       "Mobile Route Stop": s.mobile,
+      "Location Type": s.locationType || "",
+      Source: s.source || "",
+      "Source Dataset": s.sourceDataset || "",
+      "Source Dataset ID": s.sourceDatasetId || "",
+      "Source Record ID": s.sourceRecordId || "",
+      "Imported At": s.importedAt || "",
+      "Coordinate Source": s.coordinateSource || "",
       Notes: s.notes,
       "Geocode Status": s.geocodeStatus || "",
       "Geocode Source": s.geocodeSource || "",
@@ -1041,32 +1098,28 @@ export default function App() {
     exportCSV(rows, headers, "sso_distance_pairs.csv");
   };
 
-  const exportReviewLog = () => {
+  const exportLocationNotes = () => {
     const headers = [
       "Date",
-      "Reviewer",
-      "CE Name",
+      "User/Reviewer",
       "Site/Pair",
-      "Issue Type",
-      "Action",
-      "Escalated",
-      "Verified",
-      "Notes",
+      "Note Type",
+      "Source Checked",
+      "Verification Note",
+      "Follow-up Needed",
     ];
 
     const rows = logs.map((l) => ({
       Date: l.date,
-      Reviewer: l.reviewer,
-      "CE Name": l.ce,
-      "Site/Pair": l.pair,
-      "Issue Type": l.issue,
-      Action: l.action,
-      Escalated: l.escalated,
-      Verified: l.verified,
-      Notes: l.notes,
+      "User/Reviewer": l.reviewer,
+      "Site/Pair": l.sitePair,
+      "Note Type": l.noteType,
+      "Source Checked": l.sourceChecked,
+      "Verification Note": l.verificationNote,
+      "Follow-up Needed": l.followUp,
     }));
 
-    exportCSV(rows, headers, "sso_review_log.csv");
+    exportCSV(rows, headers, "sso_location_notes.csv");
   };
 
   const importCSV = (e) => {
@@ -1096,6 +1149,13 @@ export default function App() {
         "site type": ["site type", "type"],
         "service model": ["service model", "service"],
         "mobile route stop": ["mobile route stop", "mobile", "bus stop"],
+        "location type": ["location type"],
+        source: ["source"],
+        "source dataset": ["source dataset"],
+        "source dataset id": ["source dataset id"],
+        "source record id": ["source record id"],
+        "imported at": ["imported at"],
+        "coordinate source": ["coordinate source"],
         notes: ["notes", "note"],
         "geocode status": ["geocode status"],
         "geocode source": ["geocode source"],
@@ -1111,10 +1171,17 @@ export default function App() {
         return index >= 0 ? values[index] || "" : "";
       };
 
+      const importedAtIso = new Date().toISOString();
       const newSites = lines
         .slice(1)
         .map((line) => {
           const vals = parseCSVLine(line).map((v) => v.replace(/^"|"$/g, "").trim());
+          const lat = toNumberOrBlank(findValue(vals, "latitude"));
+          const lon = toNumberOrBlank(findValue(vals, "longitude"));
+          const locationTypeMatch = findValue(vals, "location type");
+          const locationType = LOCATION_TYPES.includes(locationTypeMatch)
+            ? locationTypeMatch
+            : "Street Address";
 
           return {
             id: findValue(vals, "site id"),
@@ -1124,18 +1191,28 @@ export default function App() {
             city: findValue(vals, "city"),
             state: findValue(vals, "state") || "TX",
             zip: findValue(vals, "zip"),
-            lat: toNumberOrBlank(findValue(vals, "latitude")),
-            lon: toNumberOrBlank(findValue(vals, "longitude")),
+            lat,
+            lon,
             siteType: findValue(vals, "site type") || "Open",
             serviceModel: findValue(vals, "service model") || "Congregate",
             mobile: (findValue(vals, "mobile route stop") || "N").toUpperCase().startsWith("Y") ? "Y" : "N",
             notes: findValue(vals, "notes"),
+            locationType,
+            source: findValue(vals, "source") || "CSV Import",
+            sourceDataset: findValue(vals, "source dataset") || "",
+            sourceDatasetId: findValue(vals, "source dataset id") || "",
+            sourceRecordId: findValue(vals, "source record id") || "",
+            importedAt: findValue(vals, "imported at") || importedAtIso,
+            coordinateSource:
+              findValue(vals, "coordinate source") ||
+              (lat !== "" && lon !== "" ? "Imported" : ""),
             geocodeStatus: findValue(vals, "geocode status") || "",
             geocodeSource: findValue(vals, "geocode source") || "",
             matchedAddress: findValue(vals, "matched address") || "",
             geocodeConfidence: findValue(vals, "geocode confidence") || "",
             geocodeNotes: findValue(vals, "geocode notes") || "",
             geocodedAt: findValue(vals, "geocoded at") || "",
+            rawRecord: null,
           };
         })
         .filter((s) => s.id.trim())
@@ -1322,13 +1399,11 @@ export default function App() {
       {
         date: new Date().toISOString().split("T")[0],
         reviewer: "",
-        ce: "",
-        pair: "",
-        issue: "Conflict",
-        action: "Reviewed",
-        escalated: "N",
-        verified: "N",
-        notes: "",
+        sitePair: "",
+        noteType: "Address Check",
+        sourceChecked: "",
+        verificationNote: "",
+        followUp: "N",
       },
     ]);
   };
@@ -1392,7 +1467,7 @@ export default function App() {
                   letterSpacing: "0.15em",
                 }}
               >
-                School Nutrition Programs
+                Public Data Location QA and Reference Tool
               </div>
               <div
                 style={{
@@ -1403,14 +1478,14 @@ export default function App() {
                   letterSpacing: "0.02em",
                 }}
               >
-                SSO Proximity Screener
+                SSO Site Location Screener
               </div>
             </div>
           </div>
 
           <div style={{ color: C.gray300, fontSize: 10, textAlign: "right", lineHeight: 1.4 }}>
-            <div style={{ fontWeight: 600 }}>Screening Tool Only</div>
-            <div>Not for final determination</div>
+            <div style={{ fontWeight: 600 }}>Location Screening Only</div>
+            <div>Not an application review tool</div>
           </div>
         </div>
       </header>
@@ -1423,54 +1498,45 @@ export default function App() {
         {tab === "Dashboard" && (
           <>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
-              <MetricCard label="Sites Entered" value={stats.total} accent={C.navy} />
+              <MetricCard label="Total Locations" value={stats.total} accent={C.navy} />
+              <MetricCard label="Manual Entries" value={stats.manualEntries} accent={C.navy} />
               <MetricCard
-                label="Pairs Evaluated"
-                value={stats.totalPairs}
+                label="Geocoded Locations"
+                value={stats.geocodedLocations}
                 accent={C.navy}
-                sub={`${stats.total}×(${stats.total}-1)/2`}
               />
               <MetricCard
-                label="Conflicts (<2.0 mi)"
-                value={stats.conflicts}
-                accent={stats.conflicts > 0 ? C.red : C.green}
-              />
-              <MetricCard
-                label="Caution (2.0–2.5 mi)"
-                value={stats.cautions}
-                accent={stats.cautions > 0 ? C.yellow : C.green}
-              />
-              <MetricCard
-                label="Missing Coords"
+                label="Missing Coordinates"
                 value={stats.missingCoords}
                 accent={stats.missingCoords > 0 ? C.yellow : C.green}
               />
               <MetricCard
-                label="Invalid Coords"
-                value={stats.invalidCoords}
-                accent={stats.invalidCoords > 0 ? C.red : C.green}
+                label="Possible Duplicates"
+                value={stats.possibleDuplicates}
+                accent={stats.possibleDuplicates > 0 ? C.yellow : C.green}
               />
               <MetricCard
-                label="USDA RD Checked"
-                value={stats.ruralChecked}
-                accent={stats.notRural > 0 ? C.yellow : C.navy}
-                sub={stats.notRural > 0 ? `${stats.notRural} not rural` : "Layer 4 query"}
+                label="Nearby Location Flags"
+                value={stats.proximityFlags}
+                accent={stats.proximityFlags > 0 ? C.yellow : C.green}
+                sub={`${stats.within2} within 2.0 mi · ${stats.verify} verify`}
               />
               <MetricCard
-                label="Duplicate Addresses"
-                value={stats.dupAddrs}
-                accent={stats.dupAddrs > 0 ? C.yellow : C.green}
+                label="Public Map Checks"
+                value={stats.referenceChecked}
+                accent={C.navy}
+                sub="Reference lookups completed"
               />
               <MetricCard
-                label="Duplicate Coords"
-                value={stats.dupCoords}
-                accent={stats.dupCoords > 0 ? C.yellow : C.green}
+                label="Needs Manual Verification"
+                value={stats.needsManualVerification}
+                accent={stats.needsManualVerification > 0 ? C.yellow : C.green}
               />
             </div>
 
             <div style={contentGridStyle}>
               <div style={card}>
-                <SectionTitle>10 Closest Site Pairs</SectionTitle>
+                <SectionTitle>10 Closest Location Pairs</SectionTitle>
                 <div style={tableWrap}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
@@ -1494,9 +1560,9 @@ export default function App() {
                           <Td>
                             <Badge
                               color={
-                                p.status === "Conflict"
+                                p.status === PAIR_STATUS.WITHIN_2
                                   ? "red"
-                                  : p.status === "Caution"
+                                  : p.status === PAIR_STATUS.VERIFY
                                     ? "yellow"
                                     : "green"
                               }
@@ -1519,28 +1585,28 @@ export default function App() {
               </div>
 
               <div style={card}>
-                <SectionTitle>Sites in Multiple Conflicts</SectionTitle>
+                <SectionTitle>Locations Near Multiple Others</SectionTitle>
                 <div style={tableWrap}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
                         <Th>Site ID</Th>
-                        <Th>Conflict Count</Th>
+                        <Th>Nearby Pair Count</Th>
                       </tr>
                     </thead>
                     <tbody>
-                      {stats.multiConflict.map(([sid, cnt]) => (
+                      {stats.multiNearby.map(([sid, cnt]) => (
                         <tr key={sid}>
                           <Td>{sid}</Td>
-                          <Td danger>
+                          <Td warn>
                             <strong>{cnt}</strong>
                           </Td>
                         </tr>
                       ))}
-                      {stats.multiConflict.length === 0 && (
+                      {stats.multiNearby.length === 0 && (
                         <tr>
                           <Td style={{ textAlign: "center", color: C.gray500 }} colSpan={2}>
-                            No sites in multiple conflicts
+                            No locations with multiple nearby pairs
                           </Td>
                         </tr>
                       )}
@@ -1562,15 +1628,13 @@ export default function App() {
                 lineHeight: 1.5,
               }}
             >
-              <strong>Disclaimer:</strong> This is a screening tool only. It does not constitute a final
-              determination. Official tools, current policy, and supervisor guidance must be used for all final
-              approval or denial decisions. Distance shown is straight-line Haversine distance; it does not
-              represent road or travel distance.
+              <strong>Disclaimer:</strong> {GLOBAL_DISCLAIMER} Distance shown is straight-line Haversine
+              distance; it does not represent road or travel distance.
             </div>
           </>
         )}
 
-        {tab === "Site Input" && (
+        {tab === "Site Workspace" && (
           <div style={card}>
             <div
               style={{
@@ -1582,7 +1646,7 @@ export default function App() {
                 flexWrap: "wrap",
               }}
             >
-              <SectionTitle>Site Data Entry ({activeSites.length}/{MAX_SITE_ROWS})</SectionTitle>
+              <SectionTitle>Site Workspace ({activeSites.length}/{MAX_SITE_ROWS})</SectionTitle>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" style={btnSecondary} onClick={() => fileRef.current?.click()}>
                   Import CSV
@@ -1631,9 +1695,11 @@ export default function App() {
                     <Th>ZIP</Th>
                     <Th>Lat</Th>
                     <Th>Lon</Th>
+                    <Th>Location Type</Th>
                     <Th>Site Type</Th>
                     <Th>Service</Th>
                     <Th>Mobile</Th>
+                    <Th>Source</Th>
                     <Th>Notes</Th>
                     <Th style={{ width: 30 }}></Th>
                   </tr>
@@ -1681,6 +1747,14 @@ export default function App() {
                       </Td>
                       <Td>
                         <Select
+                          value={s.locationType || "Street Address"}
+                          onChange={(v) => updateSite(i, "locationType", v)}
+                          options={LOCATION_TYPES}
+                          style={{ fontSize: 11 }}
+                        />
+                      </Td>
+                      <Td>
+                        <Select
                           value={s.siteType}
                           onChange={(v) => updateSite(i, "siteType", v)}
                           options={SITE_TYPES}
@@ -1702,6 +1776,9 @@ export default function App() {
                           options={["Y", "N"]}
                           style={{ width: 50 }}
                         />
+                      </Td>
+                      <Td style={{ fontSize: 11, color: C.gray500 }}>
+                        {s.source || "Manual Entry"}
                       </Td>
                       <Td>
                         <input
@@ -1732,14 +1809,26 @@ export default function App() {
               </table>
             </div>
 
-            <div style={{ marginTop: 8, fontSize: 10, color: C.gray500 }}>
-              Latitude and longitude must be in decimal degrees. Distances recalculate automatically. CSV import
-              accepts common header aliases such as ID, CE, lat, lon, and address.
+            <div
+              style={{
+                marginTop: 12,
+                padding: "10px 14px",
+                background: C.gray50,
+                border: `1px solid ${C.gray200}`,
+                borderRadius: 4,
+                fontSize: 11,
+                color: C.gray700,
+                lineHeight: 1.5,
+              }}
+            >
+              <strong>Note:</strong> {GLOBAL_DISCLAIMER} Latitude and longitude must be in decimal degrees.
+              Distances recalculate automatically. CSV import accepts common header aliases such as ID, CE, lat,
+              lon, and address.
             </div>
           </div>
         )}
 
-        {tab === "Data Quality" && (
+        {tab === "Geocode & QA" && (
           <div style={card}>
             <div
               style={{
@@ -1751,7 +1840,7 @@ export default function App() {
                 flexWrap: "wrap",
               }}
             >
-              <SectionTitle>Geocode &amp; Data Quality Checks</SectionTitle>
+              <SectionTitle>Geocode &amp; Location QA</SectionTitle>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   type="button"
@@ -1770,10 +1859,10 @@ export default function App() {
                   Re-geocode All Addresses
                 </button>
                 <button type="button" style={btnSecondary} onClick={checkRuralForSites} disabled={ruralBusy}>
-                  {ruralBusy ? "Checking USDA RD..." : "Check USDA RD Rural"}
+                  {ruralBusy ? "Checking USDA RD Map..." : "Run USDA RD Map Reference"}
                 </button>
                 <button type="button" style={btnSecondary} onClick={clearRuralResults} disabled={ruralBusy}>
-                  Clear Rural Results
+                  Clear Reference Results
                 </button>
               </div>
             </div>
@@ -1847,8 +1936,8 @@ export default function App() {
                     <Th>Matched Address</Th>
                     <Th>Geocode Source</Th>
                     <Th>Geocode Notes</Th>
-                    <Th>USDA RD Rural</Th>
-                    <Th>RD Detail</Th>
+                    <Th>USDA RD Map Reference</Th>
+                    <Th>Reference Detail</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1892,19 +1981,26 @@ export default function App() {
                         {g.geocodeNotes || ""}
                       </Td>
                       <Td
-                        danger={ruralResults[g.id]?.status === "Not Rural" || ruralResults[g.id]?.status === "Error"}
-                        warn={ruralResults[g.id]?.status === "Checking"}
+                        warn={
+                          ruralResults[g.id]?.status === "Not Rural" ||
+                          ruralResults[g.id]?.status === "Checking"
+                        }
+                        danger={ruralResults[g.id]?.status === "Error"}
                       >
-                        {ruralResults[g.id]?.status === "Rural" && <Badge color="green">RURAL</Badge>}
-                        {ruralResults[g.id]?.status === "Not Rural" && <Badge color="red">NOT RURAL</Badge>}
+                        {ruralResults[g.id]?.status === "Rural" && (
+                          <Badge color="green">OUTSIDE LAYER 4</Badge>
+                        )}
+                        {ruralResults[g.id]?.status === "Not Rural" && (
+                          <Badge color="yellow">INSIDE LAYER 4</Badge>
+                        )}
                         {ruralResults[g.id]?.status === "Checking" && <Badge color="yellow">CHECKING</Badge>}
                         {ruralResults[g.id]?.status === "Error" && <Badge color="red">ERROR</Badge>}
                       </Td>
                       <Td style={{ fontSize: 10, color: C.gray500 }}>
                         {ruralResults[g.id]?.status === "Not Rural"
-                          ? `Matched ${ruralResults[g.id].matchCount} ineligible polygon(s)`
+                          ? `Point intersects ${ruralResults[g.id].matchCount} USDA RD layer 4 polygon(s)`
                           : ruralResults[g.id]?.status === "Rural"
-                            ? "No ineligible polygon matched"
+                            ? "Point does not intersect any USDA RD layer 4 polygon"
                             : ruralResults[g.id]?.message || ""}
                       </Td>
                     </tr>
@@ -1922,7 +2018,7 @@ export default function App() {
           </div>
         )}
 
-        {tab === "Rural Check" && (
+        {tab === "Reference Maps" && (
           <div style={card}>
             <div
               style={{
@@ -1934,13 +2030,13 @@ export default function App() {
                 flexWrap: "wrap",
               }}
             >
-              <SectionTitle>USDA Rural Development Rural Check</SectionTitle>
+              <SectionTitle>Public Map Reference</SectionTitle>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" style={btnPrimary} onClick={checkRuralForSites} disabled={ruralBusy}>
-                  {ruralBusy ? "Checking..." : "Run Rural Check"}
+                  {ruralBusy ? "Querying..." : "Run USDA RD Map Reference"}
                 </button>
                 <button type="button" style={btnSecondary} onClick={clearRuralResults} disabled={ruralBusy}>
-                  Clear Results
+                  Clear Reference Results
                 </button>
               </div>
             </div>
@@ -1957,10 +2053,12 @@ export default function App() {
                 lineHeight: 1.5,
               }}
             >
-              This check uses USDA Rural Development Eligibility MapServer layer {USDA_RD_LAYER_ID}, RHS SFH/MFH
-              ineligible areas. A point that intersects an ineligible-area polygon is flagged as <strong>Not Rural</strong>.
-              A point with no matching polygon is flagged as <strong>Rural</strong>. This is still a screening result,
-              not a final agency determination.
+              <strong>Disclaimer:</strong> {GLOBAL_DISCLAIMER} This panel queries the USDA Rural Development
+              Eligibility MapServer layer {USDA_RD_LAYER_ID} (RHS SFH/MFH ineligible-area polygons) as a public
+              map reference only. A point that intersects a polygon is shown as <strong>Inside Layer 4</strong>;
+              a point with no intersection is shown as <strong>Outside Layer 4</strong>. These are neutral
+              location facts about the published polygon layer, not eligibility, approval, denial, or waiver
+              determinations.
             </div>
 
             <div style={{ ...tableWrap, maxHeight: 560 }}>
@@ -1971,8 +2069,8 @@ export default function App() {
                     <Th>Site Name</Th>
                     <Th>Lat</Th>
                     <Th>Lon</Th>
-                    <Th>Rural Status</Th>
-                    <Th>Matched Polygons</Th>
+                    <Th>Map Layer Result</Th>
+                    <Th>Polygons Intersected</Th>
                     <Th>Checked At</Th>
                     <Th>Test Query URL</Th>
                   </tr>
@@ -1989,12 +2087,15 @@ export default function App() {
                         <Td>{s.name}</Td>
                         <Td>{s.lat}</Td>
                         <Td>{s.lon}</Td>
-                        <Td danger={result?.status === "Not Rural" || result?.status === "Error"} warn={!valid || result?.status === "Checking"}>
+                        <Td
+                          warn={result?.status === "Not Rural" || result?.status === "Checking"}
+                          danger={result?.status === "Error"}
+                        >
                           {!valid && <Badge color="yellow">NO VALID COORDS</Badge>}
                           {valid && !result?.status && <Badge color="gray">NOT CHECKED</Badge>}
                           {result?.status === "Checking" && <Badge color="yellow">CHECKING</Badge>}
-                          {result?.status === "Rural" && <Badge color="green">RURAL</Badge>}
-                          {result?.status === "Not Rural" && <Badge color="red">NOT RURAL</Badge>}
+                          {result?.status === "Rural" && <Badge color="green">OUTSIDE LAYER 4</Badge>}
+                          {result?.status === "Not Rural" && <Badge color="yellow">INSIDE LAYER 4</Badge>}
                           {result?.status === "Error" && <Badge color="red">ERROR</Badge>}
                         </Td>
                         <Td>{result?.matchCount ?? ""}</Td>
@@ -2017,7 +2118,7 @@ export default function App() {
                   {activeSites.length === 0 && (
                     <tr>
                       <Td colSpan={8} style={{ textAlign: "center", color: C.gray500, padding: 20 }}>
-                        Enter site records before running rural checks.
+                        Enter site records before running map reference lookups.
                       </Td>
                     </tr>
                   )}
@@ -2027,7 +2128,7 @@ export default function App() {
           </div>
         )}
 
-        {tab === "Distance Pairs" && (
+        {tab === "Nearby Sites" && (
           <div style={card}>
             <div
               style={{
@@ -2038,19 +2139,35 @@ export default function App() {
                 gap: 12,
               }}
             >
-              <SectionTitle>All Unique Site Pairs ({pairs.length})</SectionTitle>
+              <SectionTitle>Nearby Location Pairs ({pairs.length})</SectionTitle>
               <button type="button" style={btnSecondary} onClick={exportPairs}>
                 Export CSV
               </button>
             </div>
 
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-              <Badge color="red">Conflict: &lt;{CONFLICT_MI.toFixed(1)} mi</Badge>
+              <Badge color="red">Within 2.0 mi: &lt;{CONFLICT_MI.toFixed(1)} mi</Badge>
               <Badge color="yellow">
-                Caution: {CONFLICT_MI.toFixed(1)}-{CAUTION_MI.toFixed(1)} mi
+                Verify 2.0-2.5 mi: {CONFLICT_MI.toFixed(1)}-{CAUTION_MI.toFixed(1)} mi
               </Badge>
-              <Badge color="green">OK: ≥{CAUTION_MI.toFixed(1)} mi</Badge>
+              <Badge color="green">No proximity flag: ≥{CAUTION_MI.toFixed(1)} mi</Badge>
               <Badge color="gray">Missing/Invalid Data</Badge>
+            </div>
+
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 14px",
+                background: C.gray50,
+                border: `1px solid ${C.gray200}`,
+                borderRadius: 4,
+                fontSize: 11,
+                color: C.gray700,
+                lineHeight: 1.5,
+              }}
+            >
+              <strong>Note:</strong> {GLOBAL_DISCLAIMER} Distances are straight-line Haversine distance, not
+              road or travel distance.
             </div>
 
             <div style={{ ...tableWrap, maxHeight: 560 }}>
@@ -2081,11 +2198,11 @@ export default function App() {
                       <Td>
                         <Badge
                           color={
-                            p.status === "Conflict"
+                            p.status === PAIR_STATUS.WITHIN_2
                               ? "red"
-                              : p.status === "Caution"
+                              : p.status === PAIR_STATUS.VERIFY
                                 ? "yellow"
-                                : p.status === "OK"
+                                : p.status === PAIR_STATUS.OK
                                   ? "green"
                                   : "gray"
                           }
@@ -2106,12 +2223,9 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-          </div>
-        )}
 
-        {tab === "Distance Matrix" && (
-          <div style={card}>
-            <SectionTitle>Pairwise Distance Matrix ({activeSites.length} sites)</SectionTitle>
+            <div style={{ marginTop: 24 }}>
+              <SectionTitle>Pairwise Distance Matrix ({activeSites.length} locations)</SectionTitle>
             <div
               style={{
                 overflowX: "auto",
@@ -2222,12 +2336,13 @@ export default function App() {
                   marginRight: 4,
                 }}
               ></span>{" "}
-              {CONFLICT_MI.toFixed(1)}-{CAUTION_MI.toFixed(1)} mi Caution
+              {CONFLICT_MI.toFixed(1)}-{CAUTION_MI.toFixed(1)} mi Verify
+            </div>
             </div>
           </div>
         )}
 
-        {tab === "Review Log" && (
+        {tab === "Location Notes" && (
           <div style={card}>
             <div
               style={{
@@ -2238,10 +2353,10 @@ export default function App() {
                 gap: 12,
               }}
             >
-              <SectionTitle>Review Documentation Log</SectionTitle>
+              <SectionTitle>Location Verification Notes</SectionTitle>
               <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" style={btnSecondary} onClick={exportReviewLog}>
-                  Export Log
+                <button type="button" style={btnSecondary} onClick={exportLocationNotes}>
+                  Export Notes
                 </button>
                 <button type="button" style={btnPrimary} onClick={addLogEntry}>
                   + Add Entry
@@ -2249,19 +2364,33 @@ export default function App() {
               </div>
             </div>
 
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 14px",
+                background: C.gray50,
+                border: `1px solid ${C.gray200}`,
+                borderRadius: 4,
+                fontSize: 11,
+                color: C.gray700,
+                lineHeight: 1.5,
+              }}
+            >
+              <strong>Disclaimer:</strong> {GLOBAL_DISCLAIMER} Use these notes to record what location data was
+              checked, which public source was consulted, and what was observed.
+            </div>
+
             <div style={{ ...tableWrap, maxHeight: 500 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
                 <thead>
                   <tr>
                     <Th>Date</Th>
-                    <Th>Reviewer</Th>
-                    <Th>CE Name</Th>
+                    <Th>User/Reviewer</Th>
                     <Th>Site/Pair</Th>
-                    <Th>Issue Type</Th>
-                    <Th>Action</Th>
-                    <Th>Escalated</Th>
-                    <Th>Verified</Th>
-                    <Th>Notes</Th>
+                    <Th>Note Type</Th>
+                    <Th>Source Checked</Th>
+                    <Th>Verification Note</Th>
+                    <Th>Follow-up Needed</Th>
                     <Th style={{ width: 30 }}></Th>
                   </tr>
                 </thead>
@@ -2277,38 +2406,47 @@ export default function App() {
                         />
                       </Td>
                       <Td>
-                        <input style={input} value={l.reviewer} onChange={(e) => updateLog(i, "reviewer", e.target.value)} />
+                        <input
+                          style={input}
+                          value={l.reviewer}
+                          onChange={(e) => updateLog(i, "reviewer", e.target.value)}
+                        />
                       </Td>
                       <Td>
-                        <input style={input} value={l.ce} onChange={(e) => updateLog(i, "ce", e.target.value)} />
-                      </Td>
-                      <Td>
-                        <input style={input} value={l.pair} onChange={(e) => updateLog(i, "pair", e.target.value)} />
-                      </Td>
-                      <Td>
-                        <Select value={l.issue} onChange={(v) => updateLog(i, "issue", v)} options={ISSUE_TYPES} />
-                      </Td>
-                      <Td>
-                        <Select value={l.action} onChange={(v) => updateLog(i, "action", v)} options={ACTIONS} />
-                      </Td>
-                      <Td>
-                        <Select
-                          value={l.escalated}
-                          onChange={(v) => updateLog(i, "escalated", v)}
-                          options={["Y", "N"]}
-                          style={{ width: 50 }}
+                        <input
+                          style={input}
+                          value={l.sitePair}
+                          onChange={(e) => updateLog(i, "sitePair", e.target.value)}
                         />
                       </Td>
                       <Td>
                         <Select
-                          value={l.verified}
-                          onChange={(v) => updateLog(i, "verified", v)}
-                          options={["Y", "N"]}
-                          style={{ width: 50 }}
+                          value={l.noteType}
+                          onChange={(v) => updateLog(i, "noteType", v)}
+                          options={NOTE_TYPES}
                         />
                       </Td>
                       <Td>
-                        <input style={input} value={l.notes} onChange={(e) => updateLog(i, "notes", e.target.value)} />
+                        <input
+                          style={input}
+                          value={l.sourceChecked}
+                          onChange={(e) => updateLog(i, "sourceChecked", e.target.value)}
+                        />
+                      </Td>
+                      <Td>
+                        <input
+                          style={input}
+                          value={l.verificationNote}
+                          onChange={(e) => updateLog(i, "verificationNote", e.target.value)}
+                        />
+                      </Td>
+                      <Td>
+                        <Select
+                          value={l.followUp}
+                          onChange={(v) => updateLog(i, "followUp", v)}
+                          options={["Y", "N"]}
+                          style={{ width: 50 }}
+                        />
                       </Td>
                       <Td>
                         <button
@@ -2321,7 +2459,7 @@ export default function App() {
                             cursor: "pointer",
                             fontSize: 16,
                           }}
-                          aria-label={`Remove log entry ${i + 1}`}
+                          aria-label={`Remove location note ${i + 1}`}
                         >
                           ×
                         </button>
@@ -2330,8 +2468,8 @@ export default function App() {
                   ))}
                   {logs.length === 0 && (
                     <tr>
-                      <Td colSpan={10} style={{ textAlign: "center", color: C.gray500, padding: 20 }}>
-                        No entries yet. Click "+ Add Entry" to begin documenting review actions.
+                      <Td colSpan={8} style={{ textAlign: "center", color: C.gray500, padding: 20 }}>
+                        No entries yet. Click "+ Add Entry" to record a location verification note.
                       </Td>
                     </tr>
                   )}
@@ -2341,7 +2479,7 @@ export default function App() {
           </div>
         )}
 
-        {tab === "Instructions" && (
+        {tab === "Data Sources" && (
           <div style={card}>
             <h2
               style={{
@@ -2351,10 +2489,10 @@ export default function App() {
                 margin: "0 0 6px",
               }}
             >
-              SSO Proximity Screening Tool
+              Public Data Sources
             </h2>
             <p style={{ color: C.gray500, fontSize: 12, marginBottom: 20 }}>
-              School Nutrition Programs — Seamless Summer Option
+              Reference catalog of public datasets and map services this tool consults or plans to consult.
             </p>
 
             <div
@@ -2366,83 +2504,139 @@ export default function App() {
                 marginBottom: 20,
               }}
             >
-              <strong style={{ color: C.red, fontSize: 13 }}>Important Disclaimer</strong>
+              <strong style={{ color: C.red, fontSize: 13 }}>Disclaimer</strong>
               <p style={{ fontSize: 12, color: C.gray700, margin: "6px 0 0", lineHeight: 1.6 }}>
-                This is a <strong>screening tool only</strong>. It does not constitute a final determination.
-                Official tools, current policy, and supervisor guidance must be used for all final approval or
-                denial decisions. Straight-line distance is used for screening; it does not represent road or
-                travel distance.
+                {GLOBAL_DISCLAIMER}
               </p>
             </div>
 
-            {[
-              {
-                title: "Purpose",
-                body:
-                  "Screen SSO site locations, including school bus stops and mobile route stops, for potential proximity issues under a 2.0-mile straight-line distance threshold. Calculates distances between all unique site pairs and flags those requiring review.",
-              },
-              {
-                title: "How to Use",
-                body:
-                  "1. Go to Site Input and enter or paste up to 100 site records, or import a CSV file.\n2. Check Data Quality for missing coordinates, invalid coordinates, or duplicates.\n3. Review Distance Pairs for all unique site pairs with distances and flags.\n4. Check Distance Matrix for a quick visual scan of all distances.\n5. Use Dashboard for summary counts and closest-pairs tables.\n6. Document review actions on the Review Log tab.",
-              },
-              {
-                title: "Distance Thresholds",
-                body:
-                  "Under 2.0 miles → CONFLICT: requires review and likely further action.\n2.0 to 2.5 miles → CAUTION: borderline; verify with official tools.\n2.5 miles or more → OK: no proximity flag.",
-              },
-              {
-                title: "Distance Method",
-                body:
-                  "Haversine formula using Earth radius = 3,959 miles. This gives straight-line great-circle distance. It is not road distance.",
-              },
-              {
-                title: "Key Flags",
-                body:
-                  "Missing Data: site lacks latitude or longitude; distance cannot be calculated.\nInvalid Coordinates: latitude or longitude is outside valid bounds.\nDuplicate Address: two or more sites share the same normalized address.\nDuplicate Coordinates: two or more sites share the same lat/lon pair.\nShared CE: both sites in a pair belong to the same Contracting Entity.",
-              },
-              {
-                title: "Address Geocoding",
-                body:
-                  "Enter addresses on the Site Input tab, then use Geocode Missing Coordinates (available on Site Input and Data Quality) to resolve latitude/longitude using the U.S. Census Geocoder. Manually entered coordinates are preserved and marked Manual Coordinates unless you choose Re-geocode All Addresses, which overwrites them after a confirmation prompt. Review any result marked Needs Review, No Match, or Error before using it. Census matching may not resolve bus stops, intersections, informal pickup points, PO boxes, or ambiguous rural locations accurately.",
-              },
-              {
-                title: "USDA RD Rural Check",
-                body:
-                  "The tool queries the USDA Rural Development Eligibility MapServer layer 4, RHS SFH/MFH ineligible areas, using the site latitude and longitude as an ArcGIS point geometry in EPSG:4326. If the point intersects an ineligible-area polygon, the site is flagged Not Rural. If no polygon is returned, the site is flagged Rural. Treat this as screening support only, not a final determination.",
-              },
-              {
-                title: "CSV Format",
-                body:
-                  "Preferred headers: Site ID, CE Name, Site Name, Street Address, City, State, ZIP, Latitude, Longitude, Site Type, Service Model, Mobile Route Stop, Notes.",
-              },
-            ].map(({ title, body }) => (
-              <div key={title} style={{ marginBottom: 16 }}>
-                <h4
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: C.navy,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    margin: "0 0 6px",
-                  }}
-                >
-                  {title}
-                </h4>
-                <p
-                  style={{
-                    fontSize: 12,
-                    color: C.gray700,
-                    margin: 0,
-                    lineHeight: 1.7,
-                    whiteSpace: "pre-line",
-                  }}
-                >
-                  {body}
-                </p>
-              </div>
-            ))}
+            <div style={{ ...tableWrap, maxHeight: 600 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                <thead>
+                  <tr>
+                    <Th>Name</Th>
+                    <Th>Purpose</Th>
+                    <Th>Status</Th>
+                    <Th>Caveat</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    {
+                      name: "TDA SNP Socrata dataset (3qgy-p3sr)",
+                      purpose:
+                        "Texas Department of Agriculture School Nutrition Programs site data. Future ingestion as a reference list of locations that have appeared in the public dataset.",
+                      status: "Planned Phase 3",
+                      caveat:
+                        "Public dataset content and refresh cadence may lag operational records. Used only as a public reference, never as an authoritative roster.",
+                    },
+                    {
+                      name: "U.S. Census Geocoder",
+                      purpose:
+                        "Resolve street addresses to latitude/longitude (Public_AR_Current benchmark) so coordinates can be screened on a map.",
+                      status: "Planned Phase 2",
+                      caveat:
+                        "Census matching may not resolve bus stops, intersections, informal pickup points, PO boxes, or ambiguous rural locations accurately. Always inspect Needs Review, No Match, and Error results manually.",
+                    },
+                    {
+                      name: "USDA RD Eligibility MapServer (Layer 4)",
+                      purpose:
+                        "Public reference for whether a coordinate falls inside USDA Rural Development's published RHS SFH/MFH ineligible-area polygons.",
+                      status: "Active reference",
+                      caveat:
+                        "Inside/Outside the polygon is a neutral location fact about the published map. It is not an eligibility, approval, denial, or waiver determination.",
+                    },
+                    {
+                      name: "TDA Summer Sites dataset",
+                      purpose:
+                        "Future reference catalog of summer meal site locations for cross-checking historic locations.",
+                      status: "Future",
+                      caveat:
+                        "Not yet integrated. Schema, refresh cadence, and naming conventions will need to be confirmed at integration time.",
+                    },
+                    {
+                      name: "Census TIGERweb",
+                      purpose:
+                        "Future reference for jurisdictional and statistical geography boundaries (places, tracts, school districts).",
+                      status: "Future",
+                      caveat:
+                        "Not yet integrated. Used only as a neutral location reference; boundary data is not a programmatic determination.",
+                    },
+                  ].map((src) => (
+                    <tr key={src.name}>
+                      <Td style={{ fontWeight: 600, minWidth: 220 }}>{src.name}</Td>
+                      <Td style={{ fontSize: 11, lineHeight: 1.5 }}>{src.purpose}</Td>
+                      <Td>
+                        <Badge
+                          color={
+                            src.status === "Active reference"
+                              ? "green"
+                              : src.status.startsWith("Planned")
+                                ? "navy"
+                                : "gray"
+                          }
+                        >
+                          {src.status}
+                        </Badge>
+                      </Td>
+                      <Td style={{ fontSize: 11, lineHeight: 1.5, color: C.gray700 }}>{src.caveat}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: 24 }}>
+              <SectionTitle>Distance &amp; Flagging Reference</SectionTitle>
+              {[
+                {
+                  title: "Distance Method",
+                  body:
+                    "Haversine formula using Earth radius = 3,959 miles. This gives straight-line great-circle distance, not road distance.",
+                },
+                {
+                  title: "Proximity Bands",
+                  body:
+                    "Within 2.0 mi: pair is closer than 2.0 miles straight-line.\nVerify 2.0-2.5 mi: pair is between 2.0 and 2.5 miles straight-line; review with public maps.\nNo proximity flag: pair is 2.5 miles or further apart.\nThese bands are screening labels only, not eligibility decisions.",
+                },
+                {
+                  title: "Location Data Flags",
+                  body:
+                    "Missing Coordinates: latitude or longitude blank.\nInvalid Coordinates: latitude or longitude outside valid bounds.\nPossible Duplicate Address: two or more locations share the same normalized address.\nPossible Duplicate Coordinates: two or more locations share the same lat/lon.\nShared CE: both locations in a pair list the same Contracting Entity.",
+                },
+                {
+                  title: "CSV Format",
+                  body:
+                    "Preferred headers: Site ID, CE Name, Site Name, Street Address, City, State, ZIP, Latitude, Longitude, Site Type, Service Model, Mobile Route Stop, Location Type, Source, Source Dataset, Source Dataset ID, Source Record ID, Imported At, Coordinate Source, Notes.",
+                },
+              ].map(({ title, body }) => (
+                <div key={title} style={{ marginBottom: 16 }}>
+                  <h4
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: C.navy,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                      margin: "0 0 6px",
+                    }}
+                  >
+                    {title}
+                  </h4>
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: C.gray700,
+                      margin: 0,
+                      lineHeight: 1.7,
+                      whiteSpace: "pre-line",
+                    }}
+                  >
+                    {body}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </main>
@@ -2455,11 +2649,10 @@ export default function App() {
           textAlign: "center",
         }}
       >
-        <div style={{ color: C.gray300, fontSize: 10, lineHeight: 1.6 }}>
-          SSO Proximity Screener — Screening Tool Only
+        <div style={{ color: C.gray300, fontSize: 10, lineHeight: 1.6, maxWidth: 900, margin: "0 auto" }}>
+          SSO Site Location Screener — Public Data Location QA and Reference Tool
           <br />
-          This tool does not replace official verification processes. All final determinations must use official
-          tools and current policy guidance.
+          {GLOBAL_DISCLAIMER}
         </div>
       </footer>
     </div>
