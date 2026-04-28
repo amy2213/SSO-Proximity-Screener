@@ -4,6 +4,7 @@ import Td from "../components/Td.jsx";
 import Th from "../components/Th.jsx";
 import { C, btnPrimary, btnSecondary, card, tableWrap } from "../styles.js";
 import { getGeocodeBadgeColor } from "../utils/geocode.js";
+import { QA_BADGE_COLOR } from "../utils/locationQa.js";
 
 export default function GeocodeQATab({
   geocodeFlags,
@@ -65,26 +66,57 @@ export default function GeocodeQATab({
             borderRadius: 4,
             fontSize: 12,
             color: C.gray700,
-            display: "flex",
-            gap: 16,
-            flexWrap: "wrap",
-            alignItems: "center",
           }}
         >
-          <span>
-            <strong>Queued:</strong> {geocodeProgress.queued}
-          </span>
-          <span>
-            <strong>Completed:</strong> {geocodeProgress.completed}
-          </span>
-          <span>
-            <strong>Geocoded:</strong> {geocodeProgress.geocoded}
-          </span>
-          <span>
-            <strong>Issues:</strong> {geocodeProgress.issues}
-          </span>
-          {geocodeProgress.statusText && (
-            <span style={{ color: C.gray500 }}>{geocodeProgress.statusText}</span>
+          <div
+            style={{
+              display: "flex",
+              gap: 16,
+              flexWrap: "wrap",
+              alignItems: "center",
+              marginBottom: geocodeProgress.queued > 0 ? 8 : 0,
+            }}
+          >
+            <span>
+              <strong>Queued:</strong> {geocodeProgress.queued}
+            </span>
+            <span>
+              <strong>Completed:</strong> {geocodeProgress.completed}
+            </span>
+            <span>
+              <strong>Geocoded:</strong> {geocodeProgress.geocoded}
+            </span>
+            <span>
+              <strong>Issues:</strong> {geocodeProgress.issues}
+            </span>
+            {geocodeProgress.statusText && (
+              <span style={{ color: C.gray500 }}>{geocodeProgress.statusText}</span>
+            )}
+          </div>
+          {geocodeProgress.queued > 0 && (
+            <div
+              style={{
+                position: "relative",
+                width: "100%",
+                height: 8,
+                background: C.gray200,
+                borderRadius: 4,
+                overflow: "hidden",
+              }}
+              role="progressbar"
+              aria-valuenow={geocodeProgress.completed}
+              aria-valuemin={0}
+              aria-valuemax={geocodeProgress.queued}
+            >
+              <div
+                style={{
+                  width: `${Math.min(100, Math.round((geocodeProgress.completed / geocodeProgress.queued) * 100))}%`,
+                  height: "100%",
+                  background: C.navy,
+                  transition: "width 0.2s ease",
+                }}
+              />
+            </div>
           )}
         </div>
       )}
@@ -124,6 +156,7 @@ export default function GeocodeQATab({
               <Th>Matched Address</Th>
               <Th>Geocode Source</Th>
               <Th>Geocode Notes</Th>
+              <Th>QA Flags</Th>
               <Th>USDA RD Map Reference</Th>
               <Th>Reference Detail</Th>
             </tr>
@@ -168,6 +201,22 @@ export default function GeocodeQATab({
                 <Td style={{ fontSize: 10, color: C.gray500, maxWidth: 240, wordBreak: "break-word" }}>
                   {g.geocodeNotes || ""}
                 </Td>
+                <Td style={{ maxWidth: 220 }}>
+                  {Array.isArray(g.qaFlags) && g.qaFlags.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {g.qaFlags.map((flag) => (
+                        <Badge
+                          key={flag.key}
+                          color={QA_BADGE_COLOR[flag.severity] || "gray"}
+                        >
+                          {flag.label}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <Badge color="green">CLEAN</Badge>
+                  )}
+                </Td>
                 <Td
                   warn={
                     ruralResults[g.id]?.status === "Not Rural" ||
@@ -195,7 +244,7 @@ export default function GeocodeQATab({
             ))}
             {geocodeFlags.length === 0 && (
               <tr>
-                <Td colSpan={16} style={{ textAlign: "center", color: C.gray500, padding: 20 }}>
+                <Td colSpan={17} style={{ textAlign: "center", color: C.gray500, padding: 20 }}>
                   No sites entered
                 </Td>
               </tr>

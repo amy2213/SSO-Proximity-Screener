@@ -1,5 +1,8 @@
 import { CENSUS_GEOCODER_URL } from "../constants.js";
 
+const GEOCODE_FETCH_TIMEOUT_MS = 12000;
+const GEOCODER_LABEL = "US Census Geocoder";
+
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -22,6 +25,17 @@ export function buildCensusGeocodeUrl(address) {
   return `${CENSUS_GEOCODER_URL}?${params.toString()}`;
 }
 
+function describeFetchError(error) {
+  if (!error) return "Unknown geocoder error";
+  if (error.name === "AbortError") {
+    return `Census geocoder request timed out after ${Math.round(GEOCODE_FETCH_TIMEOUT_MS / 1000)}s`;
+  }
+  if (error instanceof TypeError) {
+    return "Network request failed — check internet connection or geocoder availability";
+  }
+  return error instanceof Error ? error.message : "Unknown geocoder error";
+}
+
 export async function geocodeAddress(site) {
   const nowIso = () => new Date().toISOString();
   const street = (site?.street || "").toString().trim();
@@ -30,36 +44,67 @@ export async function geocodeAddress(site) {
   const zip = (site?.zip || "").toString().trim();
 
   if (!street || !city || !state || !zip) {
+    const missing = [
+      !street && "street",
+      !city && "city",
+      !state && "state",
+      !zip && "ZIP",
+    ]
+      .filter(Boolean)
+      .join(", ");
+
     return {
       lat: "",
       lon: "",
+      coordinateSource: "",
       geocodeStatus: "Needs Address",
       geocodeSource: "",
       matchedAddress: "",
       geocodeConfidence: "",
-      geocodeNotes: "Missing required address fields",
+      geocodeNotes: `Missing required address fields: ${missing}`,
       geocodedAt: nowIso(),
     };
   }
 
-  const address = buildFullAddress(site);
+  const address = buildFullAddress(site).replace(/\s+/g, " ").trim();
+
+  const controller =
+    typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeoutId = controller
+    ? setTimeout(() => controller.abort(), GEOCODE_FETCH_TIMEOUT_MS)
+    : null;
 
   try {
-    const response = await fetch(buildCensusGeocodeUrl(address));
+    const response = await fetch(buildCensusGeocodeUrl(address), {
+      signal: controller?.signal,
+    });
 
     if (!response.ok) {
-      throw new Error(`Census geocoder HTTP ${response.status}`);
+      return {
+        lat: "",
+        lon: "",
+        coordinateSource: "",
+        geocodeStatus: "Error",
+        geocodeSource: GEOCODER_LABEL,
+        matchedAddress: "",
+        geocodeConfidence: "",
+        geocodeNotes: `Census geocoder HTTP ${response.status}`,
+        geocodedAt: nowIso(),
+      };
     }
 
     const data = await response.json();
-    const matches = Array.isArray(data?.result?.addressMatches) ? data.result.addressMatches : [];
+    const matches = Array.isArray(data?.result?.addressMatches)
+      ? data.result.addressMatches
+      : [];
 
     if (matches.length === 0) {
       return {
         lat: "",
         lon: "",
+        coordinateSource: "",
         geocodeStatus: "No Match",
-        geocodeSource: "US Census Geocoder",
+        geocodeSource: GEOCODER_LABEL,
         matchedAddress: "",
         geocodeConfidence: "",
         geocodeNotes: "No geocode match returned",
@@ -76,8 +121,9 @@ export async function geocodeAddress(site) {
       return {
         lat: "",
         lon: "",
+        coordinateSource: "",
         geocodeStatus: "Error",
-        geocodeSource: "US Census Geocoder",
+        geocodeSource: GEOCODER_LABEL,
         matchedAddress: first?.matchedAddress || "",
         geocodeConfidence: "",
         geocodeNotes: "Geocoder returned invalid coordinates",
@@ -89,11 +135,12 @@ export async function geocodeAddress(site) {
       return {
         lat,
         lon,
+        coordinateSource: "Geocoder",
         geocodeStatus: "Needs Review",
-        geocodeSource: "US Census Geocoder",
+        geocodeSource: GEOCODER_LABEL,
         matchedAddress: first?.matchedAddress || "",
         geocodeConfidence: "Multiple Matches",
-        geocodeNotes: "Multiple matches returned; verify coordinates",
+        geocodeNotes: `Multiple matches returned (${matches.length}); verify coordinates`,
         geocodedAt: nowIso(),
       };
     }
@@ -101,8 +148,9 @@ export async function geocodeAddress(site) {
     return {
       lat,
       lon,
+      coordinateSource: "Geocoder",
       geocodeStatus: "Geocoded",
-      geocodeSource: "US Census Geocoder",
+      geocodeSource: GEOCODER_LABEL,
       matchedAddress: first?.matchedAddress || "",
       geocodeConfidence: "Matched",
       geocodeNotes: "",
@@ -112,13 +160,16 @@ export async function geocodeAddress(site) {
     return {
       lat: "",
       lon: "",
+      coordinateSource: "",
       geocodeStatus: "Error",
-      geocodeSource: "US Census Geocoder",
+      geocodeSource: GEOCODER_LABEL,
       matchedAddress: "",
       geocodeConfidence: "",
-      geocodeNotes: error instanceof Error ? error.message : "Unknown geocoder error",
+      geocodeNotes: describeFetchError(error),
       geocodedAt: nowIso(),
     };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 

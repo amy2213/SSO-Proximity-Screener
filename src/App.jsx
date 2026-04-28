@@ -22,6 +22,7 @@ import { hasValidCoords, isBlank, toNumberOrBlank } from "./utils/coords.js";
 import { csvEscape, normalizeHeader, parseCSVLine } from "./utils/csv.js";
 import { haversine } from "./utils/distance.js";
 import { geocodeAddress, sleep } from "./utils/geocode.js";
+import { getLocationQaFlags } from "./utils/locationQa.js";
 import { queryUsdaRuralStatus } from "./utils/usda.js";
 
 export default function App() {
@@ -77,6 +78,7 @@ export default function App() {
         ? `${Number(s.lat).toFixed(6)},${Number(s.lon).toFixed(6)}`
         : "";
       const dupCoord = Boolean(coordKey && coordCounts[coordKey] > 1);
+      const qaFlags = getLocationQaFlags(s, { dupAddr, dupCoord });
 
       return {
         ...s,
@@ -86,6 +88,7 @@ export default function App() {
         invalidCoord,
         dupAddr,
         dupCoord,
+        qaFlags,
       };
     });
   }, [activeSites, fullAddr, cleanAddr]);
@@ -504,7 +507,11 @@ export default function App() {
           prev.map((s) => {
             if (!s.id || !s.id.trim()) return s;
             if (hasValidCoords(s) && !s.geocodeStatus) {
-              return { ...s, geocodeStatus: "Manual Coordinates" };
+              return {
+                ...s,
+                geocodeStatus: "Manual Coordinates",
+                coordinateSource: s.coordinateSource || "Manual",
+              };
             }
             return s;
           }),
@@ -563,6 +570,9 @@ export default function App() {
             if (Number.isFinite(Number(result.lat)) && Number.isFinite(Number(result.lon))) {
               next.lat = result.lat;
               next.lon = result.lon;
+              if (result.coordinateSource) {
+                next.coordinateSource = result.coordinateSource;
+              }
             }
             return next;
           }),
