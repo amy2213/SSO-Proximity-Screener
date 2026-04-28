@@ -18,6 +18,12 @@ export default function DashboardTab({ stats }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
         <MetricCard label="Total Locations" value={stats.total} accent={C.navy} />
         <MetricCard label="Manual Entries" value={stats.manualEntries} accent={C.navy} />
+        <MetricCard
+          label="Imported Public Records"
+          value={stats.importedPublicRecords}
+          accent={C.navy}
+          sub="From TDA Open Data"
+        />
         <MetricCard label="Geocoded Locations" value={stats.geocodedLocations} accent={C.navy} />
         <MetricCard
           label="Missing Coordinates"

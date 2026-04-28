@@ -1,11 +1,11 @@
 export const DATA_SOURCES = [
   {
-    name: "TDA SNP Socrata dataset (3qgy-p3sr)",
+    name: "TDA SNP Contact and Site-Level Program Participation (3qgy-p3sr)",
     purpose:
-      "Texas Department of Agriculture School Nutrition Programs site data. Future ingestion as a reference list of locations that have appeared in the public dataset.",
-    status: "Planned Phase 3",
+      "Texas Department of Agriculture School Nutrition Programs contact and site-level participation data. Searched from the TDA Import tab; selected records can be added to the workspace as public-data references.",
+    status: "Active integration",
     caveat:
-      "Public dataset content and refresh cadence may lag operational records. Used only as a public reference, never as an authoritative roster.",
+      "Public dataset content and refresh cadence may lag operational records. Field names may change. Imported records are public references, never an authoritative roster.",
   },
   {
     name: "U.S. Census Geocoder",

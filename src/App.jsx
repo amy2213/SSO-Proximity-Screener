@@ -18,11 +18,13 @@ import LocationNotesTab from "./tabs/LocationNotesTab.jsx";
 import NearbySitesTab from "./tabs/NearbySitesTab.jsx";
 import ReferenceMapsTab from "./tabs/ReferenceMapsTab.jsx";
 import SiteWorkspaceTab from "./tabs/SiteWorkspaceTab.jsx";
+import TdaImportTab from "./tabs/TdaImportTab.jsx";
 import { hasValidCoords, isBlank, toNumberOrBlank } from "./utils/coords.js";
 import { csvEscape, normalizeHeader, parseCSVLine } from "./utils/csv.js";
 import { haversine } from "./utils/distance.js";
 import { geocodeAddress, sleep } from "./utils/geocode.js";
 import { getLocationQaFlags } from "./utils/locationQa.js";
+import { mapTdaRecordToSite, searchTdaSites, TDA_DATASET_META } from "./utils/socrata.js";
 import { queryUsdaRuralStatus } from "./utils/usda.js";
 
 export default function App() {
@@ -39,6 +41,12 @@ export default function App() {
     issues: 0,
     statusText: "",
   });
+  const [tdaQuery, setTdaQuery] = useState("");
+  const [tdaLimit, setTdaLimit] = useState(TDA_DATASET_META.defaultLimit);
+  const [tdaResults, setTdaResults] = useState([]);
+  const [tdaSelectedIds, setTdaSelectedIds] = useState(() => new Set());
+  const [tdaStatus, setTdaStatus] = useState(null);
+  const [tdaLoading, setTdaLoading] = useState(false);
   const fileRef = useRef();
 
   const fullAddr = useCallback((s) => `${s.street}, ${s.city}, ${s.state} ${s.zip}`.trim(), []);
@@ -140,6 +148,7 @@ export default function App() {
     const manualEntries = activeSites.filter(
       (s) => !s.source || s.source === "Manual Entry" || s.source === "Sample Data",
     ).length;
+    const importedPublicRecords = activeSites.filter((s) => s.source === "TDA Open Data").length;
     const geocodedLocations = activeSites.filter((s) => s.geocodeStatus === "Geocoded").length;
     const needsManualVerification = activeSites.filter((s) => {
       if (!hasValidCoords(s)) return true;
@@ -180,6 +189,7 @@ export default function App() {
       possibleDuplicates,
       referenceChecked,
       manualEntries,
+      importedPublicRecords,
       geocodedLocations,
       needsManualVerification,
       multiNearby,
@@ -646,6 +656,141 @@ export default function App() {
     ]);
   };
 
+  const tdaResultId = (record, index = 0) =>
+    record?.odprecid ||
+    `${record?.ceid || ""}_${record?.siteid || ""}_${record?.programyear || ""}_${index}`;
+
+  const searchTdaImport = useCallback(async () => {
+    setTdaLoading(true);
+    setTdaStatus({ error: false, text: "Querying TDA Open Data..." });
+    const result = await searchTdaSites(tdaQuery, tdaLimit);
+    setTdaResults(result.records);
+    setTdaSelectedIds(new Set());
+    setTdaStatus({ error: result.error, text: result.statusText });
+    setTdaLoading(false);
+  }, [tdaQuery, tdaLimit]);
+
+  const toggleTdaSelection = useCallback((id) => {
+    setTdaSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllVisibleTda = useCallback(() => {
+    setTdaSelectedIds(
+      new Set(tdaResults.map((r, i) => tdaResultId(r, i))),
+    );
+  }, [tdaResults]);
+
+  const deselectAllTda = useCallback(() => {
+    setTdaSelectedIds(new Set());
+  }, []);
+
+  const clearTdaResults = useCallback(() => {
+    setTdaResults([]);
+    setTdaSelectedIds(new Set());
+    setTdaStatus(null);
+  }, []);
+
+  const importTdaRecordsInternal = useCallback(
+    (records) => {
+      if (!records.length) {
+        setTdaStatus({ error: false, text: "No records selected to import." });
+        return;
+      }
+
+      const cleanAddrParts = (s) =>
+        `${s.street || ""}, ${s.city || ""}, ${s.state || ""} ${s.zip || ""}`
+          .toUpperCase()
+          .replace(/[.,]/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+      const normName = (s) => (s?.name || "").toString().toUpperCase().replace(/\s+/g, " ").trim();
+
+      let imported = 0;
+      let skippedDup = 0;
+      let skippedCapacity = 0;
+
+      setSites((prev) => {
+        const existingDatasetKeys = new Set(
+          prev
+            .filter((s) => s.sourceDatasetId && s.sourceRecordId)
+            .map((s) => `${s.sourceDatasetId}::${s.sourceRecordId}`),
+        );
+        const existingNameAddrKeys = new Set(
+          prev
+            .filter((s) => s.id && s.id.toString().trim())
+            .map((s) => `${normName(s)}::${cleanAddrParts(s)}`),
+        );
+
+        const seenInBatchDatasetKeys = new Set();
+        const seenInBatchNameAddrKeys = new Set();
+        const additions = [];
+        const activeCount = prev.filter((s) => s.id && s.id.toString().trim()).length;
+        let capacityRemaining = Math.max(0, MAX_SITE_ROWS - activeCount);
+
+        for (const rec of records) {
+          const mapped = mapTdaRecordToSite(rec);
+          if (!mapped.id) {
+            skippedDup += 1;
+            continue;
+          }
+
+          const datasetKey = `${mapped.sourceDatasetId}::${mapped.sourceRecordId}`;
+          const nameAddrKey = `${normName(mapped)}::${cleanAddrParts(mapped)}`;
+
+          if (existingDatasetKeys.has(datasetKey) || seenInBatchDatasetKeys.has(datasetKey)) {
+            skippedDup += 1;
+            continue;
+          }
+          if (existingNameAddrKeys.has(nameAddrKey) || seenInBatchNameAddrKeys.has(nameAddrKey)) {
+            skippedDup += 1;
+            continue;
+          }
+          if (capacityRemaining <= 0) {
+            skippedCapacity += 1;
+            continue;
+          }
+
+          additions.push(mapped);
+          seenInBatchDatasetKeys.add(datasetKey);
+          seenInBatchNameAddrKeys.add(nameAddrKey);
+          capacityRemaining -= 1;
+          imported += 1;
+        }
+
+        if (!additions.length) return prev;
+
+        const blanks = prev.filter((s) => !s.id || !s.id.toString().trim());
+        const filled = prev.filter((s) => s.id && s.id.toString().trim());
+        return [...filled, ...additions, ...blanks];
+      });
+
+      const parts = [`Imported ${imported} record${imported === 1 ? "" : "s"}`];
+      parts.push(`skipped ${skippedDup} duplicate${skippedDup === 1 ? "" : "s"}`);
+      if (skippedCapacity > 0) {
+        parts.push(`skipped ${skippedCapacity} for capacity (max ${MAX_SITE_ROWS} rows)`);
+      }
+      setTdaStatus({
+        error: false,
+        text: `${parts.join(", ")}.`,
+      });
+    },
+    [],
+  );
+
+  const importSelectedTdaRecords = useCallback(() => {
+    const selected = tdaResults.filter((r, i) => tdaSelectedIds.has(tdaResultId(r, i)));
+    importTdaRecordsInternal(selected);
+  }, [tdaResults, tdaSelectedIds, importTdaRecordsInternal]);
+
+  const importAllTdaRecords = useCallback(() => {
+    importTdaRecordsInternal(tdaResults);
+  }, [tdaResults, importTdaRecordsInternal]);
+
   return (
     <div
       style={{
@@ -746,6 +891,27 @@ export default function App() {
             addSite={addSite}
             updateSite={updateSite}
             removeSite={removeSite}
+          />
+        )}
+
+        {tab === "TDA Import" && (
+          <TdaImportTab
+            tdaQuery={tdaQuery}
+            tdaLimit={tdaLimit}
+            tdaResults={tdaResults}
+            tdaSelectedIds={tdaSelectedIds}
+            tdaStatus={tdaStatus}
+            tdaLoading={tdaLoading}
+            setTdaQuery={setTdaQuery}
+            setTdaLimit={setTdaLimit}
+            searchTdaImport={searchTdaImport}
+            toggleTdaSelection={toggleTdaSelection}
+            clearTdaResults={clearTdaResults}
+            importSelectedTdaRecords={importSelectedTdaRecords}
+            importAllTdaRecords={importAllTdaRecords}
+            selectAllVisibleTda={selectAllVisibleTda}
+            deselectAllTda={deselectAllTda}
+            activeSitesCount={activeSites.length}
           />
         )}
 

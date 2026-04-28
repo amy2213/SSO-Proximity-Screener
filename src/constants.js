@@ -52,6 +52,7 @@ export const GLOBAL_DISCLAIMER =
 export const TABS = [
   "Dashboard",
   "Site Workspace",
+  "TDA Import",
   "Geocode & QA",
   "Nearby Sites",
   "Reference Maps",
