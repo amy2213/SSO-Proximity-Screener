@@ -786,6 +786,167 @@ export default function App() {
     geocodeSites({ mode: "all" });
   }, [geocodeSites]);
 
+  const geocodeSingleSite = useCallback(
+    async (indexOrId, { overwrite = false } = {}) => {
+      const isIndex = typeof indexOrId === "number";
+      const target = isIndex
+        ? sites[indexOrId]
+        : sites.find((s) => s.id === indexOrId);
+      if (!target) return { ok: false, message: "Site not found" };
+
+      const street = (target.street || "").toString().trim();
+      const city = (target.city || "").toString().trim();
+      const state = (target.state || "").toString().trim();
+      const zip = (target.zip || "").toString().trim();
+
+      const matches = (s, i) =>
+        isIndex ? i === indexOrId : s.id === target.id && s.id !== "";
+
+      if (!street || !city || !state || !zip) {
+        const missing = [
+          !street && "street",
+          !city && "city",
+          !state && "state",
+          !zip && "ZIP",
+        ]
+          .filter(Boolean)
+          .join(", ");
+        const nowIso = new Date().toISOString();
+        setSites((prev) =>
+          prev.map((s, i) => {
+            if (!matches(s, i)) return s;
+            return {
+              ...s,
+              geocodeStatus: "Needs Address",
+              geocodeSource: "",
+              geocodeNotes: `Missing required address fields: ${missing}`,
+              geocodedAt: nowIso,
+            };
+          }),
+        );
+        return { ok: false, status: "Needs Address", message: `Missing address fields: ${missing}` };
+      }
+
+      if (hasValidCoords(target) && !overwrite) {
+        if (
+          typeof window !== "undefined" &&
+          !window.confirm(
+            "This row already has coordinates. Re-geocode and replace them?",
+          )
+        ) {
+          return { ok: false, status: "Cancelled", message: "Cancelled by user" };
+        }
+      }
+
+      setGeocodeBusy(true);
+      const result = await geocodeAddress(target);
+
+      let appliedLat = "";
+      let appliedLon = "";
+      setSites((prev) =>
+        prev.map((s, i) => {
+          if (!matches(s, i)) return s;
+          const next = {
+            ...s,
+            geocodeStatus: result.geocodeStatus,
+            geocodeSource: result.geocodeSource,
+            matchedAddress: result.matchedAddress,
+            geocodeConfidence: result.geocodeConfidence,
+            geocodeNotes: result.geocodeNotes,
+            geocodedAt: result.geocodedAt,
+          };
+          if (
+            Number.isFinite(Number(result.lat)) &&
+            Number.isFinite(Number(result.lon))
+          ) {
+            next.lat = result.lat;
+            next.lon = result.lon;
+            appliedLat = result.lat;
+            appliedLon = result.lon;
+            if (result.coordinateSource) {
+              next.coordinateSource = result.coordinateSource;
+            }
+          }
+          return next;
+        }),
+      );
+      setGeocodeBusy(false);
+
+      const ok = result.geocodeStatus === "Geocoded";
+      return {
+        ok,
+        status: result.geocodeStatus,
+        lat: appliedLat,
+        lon: appliedLon,
+        notes: result.geocodeNotes,
+      };
+    },
+    [sites],
+  );
+
+  const geocodeAndLookupGeoForSelectedSite = useCallback(async () => {
+    if (!selectedGeoSiteId) return;
+    const target = sites.find((s) => s.id === selectedGeoSiteId);
+    if (!target) return;
+
+    let lat = Number(target.lat);
+    let lon = Number(target.lon);
+    let canRunCensus = hasValidCoords(target);
+
+    if (!canRunCensus) {
+      const geo = await geocodeSingleSite(target.id, { overwrite: false });
+      if (geo?.ok) {
+        lat = Number(geo.lat);
+        lon = Number(geo.lon);
+        canRunCensus = Number.isFinite(lat) && Number.isFinite(lon);
+      }
+    }
+
+    if (!canRunCensus) {
+      setGeoLookupProgress({
+        queued: 1,
+        completed: 1,
+        resolved: 0,
+        issues: 1,
+        statusText:
+          "Could not geocode the selected site. Census geography lookup skipped.",
+      });
+      return;
+    }
+
+    setGeoLookupBusy(true);
+    setGeoLookupProgress({
+      queued: 1,
+      completed: 0,
+      resolved: 0,
+      issues: 0,
+      statusText: `Looking up Census geography for ${target.id}`,
+    });
+
+    setSites((prev) =>
+      prev.map((s) =>
+        s.id === target.id
+          ? { ...s, geoLookupStatus: "Checking", geoLookupNotes: "" }
+          : s,
+      ),
+    );
+
+    const result = await lookupCensusGeographiesForSite({ ...target, lat, lon });
+    applyGeoLookupResultToSite(target.id, result);
+
+    const ok = result.geoLookupStatus === "Looked Up";
+    setGeoLookupProgress({
+      queued: 1,
+      completed: 1,
+      resolved: ok ? 1 : 0,
+      issues: ok ? 0 : 1,
+      statusText: ok
+        ? `Resolved Census geography for ${target.id}`
+        : `${result.geoLookupStatus}: ${result.geoLookupNotes || ""}`,
+    });
+    setGeoLookupBusy(false);
+  }, [selectedGeoSiteId, sites, geocodeSingleSite]);
+
   const updateLog = (idx, field, value) => {
     setLogs((prev) => {
       const next = [...prev];
@@ -1415,6 +1576,7 @@ export default function App() {
             addSite={addSite}
             updateSite={updateSite}
             removeSite={removeSite}
+            geocodeSingleSite={geocodeSingleSite}
           />
         )}
 
@@ -1451,6 +1613,9 @@ export default function App() {
             lookupGeoForSelectedSite={lookupGeoForSelectedSite}
             lookupMissingGeoForSites={lookupMissingGeoForSites}
             applyPastedCensusGeoJsonToSelectedSite={applyPastedCensusGeoJsonToSelectedSite}
+            geocodeSingleSite={geocodeSingleSite}
+            geocodeAndLookupGeoForSelectedSite={geocodeAndLookupGeoForSelectedSite}
+            geocodeBusy={geocodeBusy}
             areaLookupBusy={areaLookupBusy}
             areaLookupProgress={areaLookupProgress}
             lookupAreaForSelectedSite={lookupAreaForSelectedSite}

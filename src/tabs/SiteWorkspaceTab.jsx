@@ -25,7 +25,19 @@ export default function SiteWorkspaceTab({
   addSite,
   updateSite,
   removeSite,
+  geocodeSingleSite,
 }) {
+  const triggerRowGeocode = (i) => {
+    if (typeof geocodeSingleSite !== "function") return;
+    geocodeSingleSite(i);
+  };
+
+  const makeAddressKeyDown = (i) => (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      triggerRowGeocode(i);
+    }
+  };
   return (
     <div style={card}>
       <div
@@ -80,6 +92,18 @@ export default function SiteWorkspaceTab({
         </div>
       </div>
 
+      <div
+        style={{
+          marginBottom: 8,
+          fontSize: 11,
+          color: C.gray500,
+          fontStyle: "italic",
+        }}
+      >
+        Tip: Press Enter while editing an address field (street, city, state, ZIP) to geocode that
+        row. Use the row's Geocode button on the right to trigger it manually.
+      </div>
+
       <div style={{ ...tableWrap, maxHeight: 600 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1200 }}>
           <thead>
@@ -100,27 +124,32 @@ export default function SiteWorkspaceTab({
               <Th>Mobile</Th>
               <Th>Source</Th>
               <Th>Notes</Th>
-              <Th style={{ width: 30 }}></Th>
+              <Th style={{ width: 90, textAlign: "center" }}>Actions</Th>
             </tr>
           </thead>
           <tbody>
             {sites.map((s, i) => (
               <tr key={`site-row-${i}`} style={{ background: i % 2 ? C.gray50 : C.white }}>
                 <Td style={{ color: C.gray500, fontSize: 10 }}>{i + 1}</Td>
-                {["id", "ce", "name", "street", "city"].map((f) => (
-                  <Td key={f}>
-                    <input
-                      style={input}
-                      value={s[f]}
-                      onChange={(e) => updateSite(i, f, e.target.value)}
-                    />
-                  </Td>
-                ))}
+                {["id", "ce", "name", "street", "city"].map((f) => {
+                  const isAddrField = f === "street" || f === "city";
+                  return (
+                    <Td key={f}>
+                      <input
+                        style={input}
+                        value={s[f]}
+                        onChange={(e) => updateSite(i, f, e.target.value)}
+                        onKeyDown={isAddrField ? makeAddressKeyDown(i) : undefined}
+                      />
+                    </Td>
+                  );
+                })}
                 <Td>
                   <input
                     style={{ ...input, width: 36 }}
                     value={s.state}
                     onChange={(e) => updateSite(i, "state", e.target.value)}
+                    onKeyDown={makeAddressKeyDown(i)}
                   />
                 </Td>
                 <Td>
@@ -128,6 +157,7 @@ export default function SiteWorkspaceTab({
                     style={{ ...input, width: 60 }}
                     value={s.zip}
                     onChange={(e) => updateSite(i, "zip", e.target.value)}
+                    onKeyDown={makeAddressKeyDown(i)}
                   />
                 </Td>
                 <Td>
@@ -189,20 +219,45 @@ export default function SiteWorkspaceTab({
                   />
                 </Td>
                 <Td>
-                  <button
-                    type="button"
-                    onClick={() => removeSite(i)}
+                  <div
                     style={{
-                      border: "none",
-                      background: "none",
-                      color: C.red,
-                      cursor: "pointer",
-                      fontSize: 16,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "stretch",
+                      gap: 4,
                     }}
-                    aria-label={`Remove row ${i + 1}`}
                   >
-                    ×
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => triggerRowGeocode(i)}
+                      disabled={geocodeBusy || ruralBusy || typeof geocodeSingleSite !== "function"}
+                      style={{
+                        ...btnSecondary,
+                        padding: "4px 8px",
+                        fontSize: 10,
+                        whiteSpace: "nowrap",
+                      }}
+                      aria-label={`Geocode row ${i + 1}`}
+                      title="Run Census geocoder for this row only"
+                    >
+                      Geocode Row
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeSite(i)}
+                      style={{
+                        border: "none",
+                        background: "none",
+                        color: C.red,
+                        cursor: "pointer",
+                        fontSize: 16,
+                        alignSelf: "center",
+                      }}
+                      aria-label={`Remove row ${i + 1}`}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </Td>
               </tr>
             ))}

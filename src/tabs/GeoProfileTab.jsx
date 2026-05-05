@@ -65,6 +65,15 @@ function formatDate(value) {
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
+function hasAddressFields(site) {
+  return Boolean(
+    (site?.street || "").toString().trim() &&
+      (site?.city || "").toString().trim() &&
+      (site?.state || "").toString().trim() &&
+      (site?.zip || "").toString().trim(),
+  );
+}
+
 export default function GeoProfileTab({
   activeSites,
   pairs,
@@ -75,6 +84,9 @@ export default function GeoProfileTab({
   lookupGeoForSelectedSite,
   lookupMissingGeoForSites,
   applyPastedCensusGeoJsonToSelectedSite,
+  geocodeSingleSite,
+  geocodeAndLookupGeoForSelectedSite,
+  geocodeBusy,
   areaLookupBusy,
   areaLookupProgress,
   lookupAreaForSelectedSite,
@@ -340,6 +352,31 @@ export default function GeoProfileTab({
           disabled={!selected || geoLookupBusy}
         >
           {geoLookupBusy ? "Looking up..." : "Lookup Census Geography for Selected"}
+        </button>
+        {selected && hasAddressFields(selected) && !hasValidCoords(selected) && (
+          <button
+            type="button"
+            style={btnSecondary}
+            onClick={() => geocodeSingleSite && geocodeSingleSite(selected.id)}
+            disabled={geocodeBusy || typeof geocodeSingleSite !== "function"}
+            title="Run the Census Geocoder for the selected site"
+          >
+            {geocodeBusy ? "Geocoding..." : "Geocode Selected Site"}
+          </button>
+        )}
+        <button
+          type="button"
+          style={btnSecondary}
+          onClick={geocodeAndLookupGeoForSelectedSite}
+          disabled={
+            !selected ||
+            geoLookupBusy ||
+            geocodeBusy ||
+            typeof geocodeAndLookupGeoForSelectedSite !== "function"
+          }
+          title="Geocode the selected site if needed, then run the Census Geography lookup"
+        >
+          Geocode + Lookup Census Geography
         </button>
         <button
           type="button"
