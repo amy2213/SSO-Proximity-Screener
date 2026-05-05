@@ -26,6 +26,14 @@ export default function DashboardTab({ stats }) {
         />
         <MetricCard label="Geocoded Locations" value={stats.geocodedLocations} accent={C.navy} />
         <MetricCard
+          label="Census Geo Lookups"
+          value={stats.geoLookupsCompleted}
+          accent={C.navy}
+          sub="Census tract / block group resolved"
+        />
+        <MetricCard label="With Census Tract" value={stats.withCensusTract} accent={C.navy} />
+        <MetricCard label="With Block Group" value={stats.withCensusBlockGroup} accent={C.navy} />
+        <MetricCard
           label="Missing Coordinates"
           value={stats.missingCoords}
           accent={stats.missingCoords > 0 ? C.yellow : C.green}

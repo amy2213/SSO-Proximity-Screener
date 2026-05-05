@@ -53,6 +53,7 @@ export const TABS = [
   "Dashboard",
   "Site Workspace",
   "TDA Import",
+  "Geo Profile",
   "Geocode & QA",
   "Nearby Sites",
   "Reference Maps",

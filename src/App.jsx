@@ -14,11 +14,13 @@ import { C, wrap } from "./styles.js";
 import DashboardTab from "./tabs/DashboardTab.jsx";
 import DataSourcesTab from "./tabs/DataSourcesTab.jsx";
 import GeocodeQATab from "./tabs/GeocodeQATab.jsx";
+import GeoProfileTab from "./tabs/GeoProfileTab.jsx";
 import LocationNotesTab from "./tabs/LocationNotesTab.jsx";
 import NearbySitesTab from "./tabs/NearbySitesTab.jsx";
 import ReferenceMapsTab from "./tabs/ReferenceMapsTab.jsx";
 import SiteWorkspaceTab from "./tabs/SiteWorkspaceTab.jsx";
 import TdaImportTab from "./tabs/TdaImportTab.jsx";
+import { lookupCensusGeographiesForSite } from "./utils/censusGeographies.js";
 import { hasValidCoords, isBlank, toNumberOrBlank } from "./utils/coords.js";
 import { csvEscape, normalizeHeader, parseCSVLine } from "./utils/csv.js";
 import { haversine } from "./utils/distance.js";
@@ -47,6 +49,15 @@ export default function App() {
   const [tdaSelectedIds, setTdaSelectedIds] = useState(() => new Set());
   const [tdaStatus, setTdaStatus] = useState(null);
   const [tdaLoading, setTdaLoading] = useState(false);
+  const [selectedGeoSiteId, setSelectedGeoSiteId] = useState(null);
+  const [geoLookupBusy, setGeoLookupBusy] = useState(false);
+  const [geoLookupProgress, setGeoLookupProgress] = useState({
+    queued: 0,
+    completed: 0,
+    resolved: 0,
+    issues: 0,
+    statusText: "",
+  });
   const fileRef = useRef();
 
   const fullAddr = useCallback((s) => `${s.street}, ${s.city}, ${s.state} ${s.zip}`.trim(), []);
@@ -150,6 +161,9 @@ export default function App() {
     ).length;
     const importedPublicRecords = activeSites.filter((s) => s.source === "TDA Open Data").length;
     const geocodedLocations = activeSites.filter((s) => s.geocodeStatus === "Geocoded").length;
+    const geoLookupsCompleted = activeSites.filter((s) => s.geoLookupStatus === "Looked Up").length;
+    const withCensusTract = activeSites.filter((s) => s.censusTractGEOID).length;
+    const withCensusBlockGroup = activeSites.filter((s) => s.censusBlockGroupGEOID).length;
     const needsManualVerification = activeSites.filter((s) => {
       if (!hasValidCoords(s)) return true;
       const status = s.geocodeStatus;
@@ -191,6 +205,9 @@ export default function App() {
       manualEntries,
       importedPublicRecords,
       geocodedLocations,
+      geoLookupsCompleted,
+      withCensusTract,
+      withCensusBlockGroup,
       needsManualVerification,
       multiNearby,
       closestPairs,
@@ -272,6 +289,20 @@ export default function App() {
     "Geocode Confidence",
     "Geocode Notes",
     "Geocoded At",
+    "Geo Lookup Status",
+    "Geo Lookup Source",
+    "Geo Lookup Notes",
+    "Geo Lookup At",
+    "Census State FIPS",
+    "Census County FIPS",
+    "Census County Name",
+    "Census Tract GEOID",
+    "Census Tract Name",
+    "Census Block Group GEOID",
+    "Census Block Group Name",
+    "Census Block GEOID",
+    "Census Place GEOID",
+    "Census Place Name",
   ];
 
   const exportSites = () => {
@@ -302,6 +333,20 @@ export default function App() {
       "Geocode Confidence": s.geocodeConfidence || "",
       "Geocode Notes": s.geocodeNotes || "",
       "Geocoded At": s.geocodedAt || "",
+      "Geo Lookup Status": s.geoLookupStatus || "",
+      "Geo Lookup Source": s.geoLookupSource || "",
+      "Geo Lookup Notes": s.geoLookupNotes || "",
+      "Geo Lookup At": s.geoLookupAt || "",
+      "Census State FIPS": s.censusStateFips || "",
+      "Census County FIPS": s.censusCountyFips || "",
+      "Census County Name": s.censusCountyName || "",
+      "Census Tract GEOID": s.censusTractGEOID || "",
+      "Census Tract Name": s.censusTractName || "",
+      "Census Block Group GEOID": s.censusBlockGroupGEOID || "",
+      "Census Block Group Name": s.censusBlockGroupName || "",
+      "Census Block GEOID": s.censusBlockGEOID || "",
+      "Census Place GEOID": s.censusPlaceGEOID || "",
+      "Census Place Name": s.censusPlaceName || "",
     }));
 
     exportCSV(rows, siteHeaders, "sso_sites.csv");
@@ -400,6 +445,20 @@ export default function App() {
         "geocode confidence": ["geocode confidence"],
         "geocode notes": ["geocode notes"],
         "geocoded at": ["geocoded at"],
+        "geo lookup status": ["geo lookup status"],
+        "geo lookup source": ["geo lookup source"],
+        "geo lookup notes": ["geo lookup notes"],
+        "geo lookup at": ["geo lookup at"],
+        "census state fips": ["census state fips"],
+        "census county fips": ["census county fips"],
+        "census county name": ["census county name"],
+        "census tract geoid": ["census tract geoid"],
+        "census tract name": ["census tract name"],
+        "census block group geoid": ["census block group geoid"],
+        "census block group name": ["census block group name"],
+        "census block geoid": ["census block geoid"],
+        "census place geoid": ["census place geoid"],
+        "census place name": ["census place name"],
       };
 
       const findValue = (values, key) => {
@@ -451,6 +510,21 @@ export default function App() {
             geocodeNotes: findValue(vals, "geocode notes") || "",
             geocodedAt: findValue(vals, "geocoded at") || "",
             rawRecord: null,
+            geoLookupStatus: findValue(vals, "geo lookup status") || "",
+            geoLookupSource: findValue(vals, "geo lookup source") || "",
+            geoLookupNotes: findValue(vals, "geo lookup notes") || "",
+            geoLookupAt: findValue(vals, "geo lookup at") || "",
+            censusStateFips: findValue(vals, "census state fips") || "",
+            censusCountyFips: findValue(vals, "census county fips") || "",
+            censusCountyName: findValue(vals, "census county name") || "",
+            censusTractGEOID: findValue(vals, "census tract geoid") || "",
+            censusTractName: findValue(vals, "census tract name") || "",
+            censusBlockGroupGEOID: findValue(vals, "census block group geoid") || "",
+            censusBlockGroupName: findValue(vals, "census block group name") || "",
+            censusBlockGEOID: findValue(vals, "census block geoid") || "",
+            censusPlaceGEOID: findValue(vals, "census place geoid") || "",
+            censusPlaceName: findValue(vals, "census place name") || "",
+            censusGeographiesRaw: null,
           };
         })
         .filter((s) => s.id.trim())
@@ -791,6 +865,154 @@ export default function App() {
     importTdaRecordsInternal(tdaResults);
   }, [tdaResults, importTdaRecordsInternal]);
 
+  const applyGeoLookupResultToSite = (siteId, result) => {
+    setSites((prev) =>
+      prev.map((s) => {
+        if (s.id !== siteId) return s;
+        const next = {
+          ...s,
+          geoLookupStatus: result.geoLookupStatus,
+          geoLookupSource: result.geoLookupSource,
+          geoLookupNotes: result.geoLookupNotes,
+          geoLookupAt: result.geoLookupAt,
+          censusStateFips: result.censusStateFips,
+          censusCountyFips: result.censusCountyFips,
+          censusCountyName: result.censusCountyName,
+          censusTractGEOID: result.censusTractGEOID,
+          censusTractName: result.censusTractName,
+          censusBlockGroupGEOID: result.censusBlockGroupGEOID,
+          censusBlockGroupName: result.censusBlockGroupName,
+          censusBlockGEOID: result.censusBlockGEOID,
+          censusPlaceGEOID: result.censusPlaceGEOID,
+          censusPlaceName: result.censusPlaceName,
+          censusGeographiesRaw: result.censusGeographiesRaw,
+        };
+        if (
+          !hasValidCoords(s) &&
+          Number.isFinite(Number(result._matchedLat)) &&
+          Number.isFinite(Number(result._matchedLon))
+        ) {
+          next.lat = result._matchedLat;
+          next.lon = result._matchedLon;
+          if (!s.coordinateSource) {
+            next.coordinateSource = "Census Geocoder";
+          }
+          if (result._matchedAddress && !s.matchedAddress) {
+            next.matchedAddress = result._matchedAddress;
+          }
+        }
+        return next;
+      }),
+    );
+  };
+
+  const lookupGeoForSelectedSite = useCallback(async () => {
+    if (!selectedGeoSiteId) return;
+    const target = sites.find((s) => s.id === selectedGeoSiteId);
+    if (!target) return;
+
+    setGeoLookupBusy(true);
+    setGeoLookupProgress({
+      queued: 1,
+      completed: 0,
+      resolved: 0,
+      issues: 0,
+      statusText: `Looking up Census geography for ${target.id}`,
+    });
+
+    setSites((prev) =>
+      prev.map((s) =>
+        s.id === target.id
+          ? { ...s, geoLookupStatus: "Checking", geoLookupNotes: "" }
+          : s,
+      ),
+    );
+
+    const result = await lookupCensusGeographiesForSite(target);
+    applyGeoLookupResultToSite(target.id, result);
+
+    const ok = result.geoLookupStatus === "Looked Up";
+    setGeoLookupProgress({
+      queued: 1,
+      completed: 1,
+      resolved: ok ? 1 : 0,
+      issues: ok ? 0 : 1,
+      statusText: ok
+        ? `Resolved Census geography for ${target.id}`
+        : `${result.geoLookupStatus}: ${result.geoLookupNotes || ""}`,
+    });
+    setGeoLookupBusy(false);
+  }, [selectedGeoSiteId, sites]);
+
+  const lookupMissingGeoForSites = useCallback(async () => {
+    const targets = sites.filter(
+      (s) => s.id && s.id.toString().trim() && (!s.geoLookupStatus || s.geoLookupStatus === "Needs Location"),
+    );
+
+    if (!targets.length) {
+      setGeoLookupProgress({
+        queued: 0,
+        completed: 0,
+        resolved: 0,
+        issues: 0,
+        statusText: "No sites need a Census geography lookup.",
+      });
+      return;
+    }
+
+    setGeoLookupBusy(true);
+    setGeoLookupProgress({
+      queued: targets.length,
+      completed: 0,
+      resolved: 0,
+      issues: 0,
+      statusText: `Queued ${targets.length} site(s)`,
+    });
+
+    let completed = 0;
+    let resolved = 0;
+    let issues = 0;
+
+    for (const target of targets) {
+      setGeoLookupProgress((prev) => ({
+        ...prev,
+        statusText: `Looking up ${target.id} (${completed + 1} of ${targets.length})`,
+      }));
+
+      setSites((prev) =>
+        prev.map((s) =>
+          s.id === target.id
+            ? { ...s, geoLookupStatus: "Checking", geoLookupNotes: "" }
+            : s,
+        ),
+      );
+
+      const result = await lookupCensusGeographiesForSite(target);
+      applyGeoLookupResultToSite(target.id, result);
+
+      completed += 1;
+      if (result.geoLookupStatus === "Looked Up") resolved += 1;
+      else issues += 1;
+
+      setGeoLookupProgress({
+        queued: targets.length,
+        completed,
+        resolved,
+        issues,
+        statusText:
+          completed === targets.length
+            ? `Done: ${resolved} resolved, ${issues} needing attention.`
+            : `Completed ${completed} of ${targets.length}`,
+      });
+
+      if (completed < targets.length) {
+        await sleep(GEOCODE_DELAY_MS);
+      }
+    }
+
+    setGeoLookupBusy(false);
+  }, [sites]);
+
   return (
     <div
       style={{
@@ -912,6 +1134,19 @@ export default function App() {
             selectAllVisibleTda={selectAllVisibleTda}
             deselectAllTda={deselectAllTda}
             activeSitesCount={activeSites.length}
+          />
+        )}
+
+        {tab === "Geo Profile" && (
+          <GeoProfileTab
+            activeSites={activeSites}
+            pairs={pairs}
+            selectedGeoSiteId={selectedGeoSiteId}
+            setSelectedGeoSiteId={setSelectedGeoSiteId}
+            geoLookupBusy={geoLookupBusy}
+            geoLookupProgress={geoLookupProgress}
+            lookupGeoForSelectedSite={lookupGeoForSelectedSite}
+            lookupMissingGeoForSites={lookupMissingGeoForSites}
           />
         )}
 

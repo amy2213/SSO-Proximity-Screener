@@ -10,10 +10,10 @@ export const DATA_SOURCES = [
   {
     name: "U.S. Census Geocoder",
     purpose:
-      "Resolve street addresses to latitude/longitude (Public_AR_Current benchmark) so coordinates can be screened on a map.",
-    status: "Planned Phase 2",
+      "Two roles: (1) resolve street addresses to latitude/longitude (Public_AR_Current benchmark) for proximity screening; (2) resolve an address or coordinate to Census tract / block group / county / place identifiers (Current_Current vintage, layers=all) on the Geo Profile tab.",
+    status: "Active integration",
     caveat:
-      "Census matching may not resolve bus stops, intersections, informal pickup points, PO boxes, or ambiguous rural locations accurately. Always inspect Needs Review, No Match, and Error results manually.",
+      "Census matching may not resolve bus stops, intersections, informal pickup points, PO boxes, or ambiguous rural locations accurately. Geographies response shape varies by benchmark, vintage, and layers. Always inspect Needs Review, No Match, and Error results manually.",
   },
   {
     name: "USDA RD Eligibility MapServer (Layer 4)",
@@ -38,6 +38,14 @@ export const DATA_SOURCES = [
     status: "Future",
     caveat:
       "Not yet integrated. Used only as a neutral location reference; boundary data is not a programmatic determination.",
+  },
+  {
+    name: "FNS / TDA Area Eligibility Data",
+    purpose:
+      "Planned reference: lookup CBG / Census tract area-data attributes by GEOID using an official source data file in a future phase, matched against the Census tract / block group identifiers Site Signal already records on each location.",
+    status: "Planned",
+    caveat:
+      "Requires an official source data file. Not integrated. When integrated it will remain reference-only — Site Signal will not make eligibility, approval, denial, waiver, or compliance decisions.",
   },
 ];
 
