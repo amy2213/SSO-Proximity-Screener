@@ -29,12 +29,10 @@ export function buildCensusGeographiesPointUrl(lat, lon) {
 function describeFetchError(error) {
   if (!error) return "Unknown Census geographies error";
   if (error.name === "AbortError") {
-    return `Census geographies request timed out after ${Math.round(
-      CENSUS_GEOGRAPHIES_FETCH_TIMEOUT_MS / 1000,
-    )}s`;
+    return "Census geography request timed out. Open the Census query link to verify manually or try again later.";
   }
   if (error instanceof TypeError) {
-    return "Network request failed — check internet connection or Census geocoder availability";
+    return "Browser request failed. Open the Census query link to verify manually or try again later.";
   }
   return error instanceof Error ? error.message : "Unknown Census geographies error";
 }
@@ -72,6 +70,7 @@ function emptyGeoFields() {
     censusPlaceGEOID: "",
     censusPlaceName: "",
     censusGeographiesRaw: null,
+    censusGeographiesQueryUrl: "",
   };
 }
 
@@ -104,10 +103,11 @@ function isPlaceKey(k) {
   return /place/i.test(k);
 }
 
-export function extractCensusGeoFields(rawResponse) {
+export function extractCensusGeoFields(rawResponse, queryUrl = "") {
   const out = emptyGeoFields();
   out.geoLookupSource = SOURCE_LABEL;
   out.geoLookupAt = new Date().toISOString();
+  out.censusGeographiesQueryUrl = queryUrl || "";
 
   const result = rawResponse?.result || rawResponse || {};
   let geographies = result?.geographies || null;
@@ -203,6 +203,7 @@ export async function lookupCensusGeographiesForPoint(lat, lon) {
       geoLookupSource: SOURCE_LABEL,
       geoLookupNotes: describeFetchError(error),
       geoLookupAt: new Date().toISOString(),
+      censusGeographiesQueryUrl: url,
     };
   }
 
@@ -211,8 +212,9 @@ export async function lookupCensusGeographiesForPoint(lat, lon) {
       ...emptyGeoFields(),
       geoLookupStatus: "Error",
       geoLookupSource: SOURCE_LABEL,
-      geoLookupNotes: `Census Geographies HTTP ${response.status}`,
+      geoLookupNotes: `Census Geographies HTTP ${response.status}. Open the Census query link to verify manually or try again later.`,
       geoLookupAt: new Date().toISOString(),
+      censusGeographiesQueryUrl: url,
     };
   }
 
@@ -228,10 +230,11 @@ export async function lookupCensusGeographiesForPoint(lat, lon) {
         parseError instanceof Error ? parseError.message : "unknown"
       }`,
       geoLookupAt: new Date().toISOString(),
+      censusGeographiesQueryUrl: url,
     };
   }
 
-  return extractCensusGeoFields(data);
+  return extractCensusGeoFields(data, url);
 }
 
 export async function lookupCensusGeographiesForAddress(address) {
@@ -256,6 +259,7 @@ export async function lookupCensusGeographiesForAddress(address) {
       geoLookupSource: SOURCE_LABEL,
       geoLookupNotes: describeFetchError(error),
       geoLookupAt: new Date().toISOString(),
+      censusGeographiesQueryUrl: url,
     };
   }
 
@@ -264,8 +268,9 @@ export async function lookupCensusGeographiesForAddress(address) {
       ...emptyGeoFields(),
       geoLookupStatus: "Error",
       geoLookupSource: SOURCE_LABEL,
-      geoLookupNotes: `Census Geographies HTTP ${response.status}`,
+      geoLookupNotes: `Census Geographies HTTP ${response.status}. Open the Census query link to verify manually or try again later.`,
       geoLookupAt: new Date().toISOString(),
+      censusGeographiesQueryUrl: url,
     };
   }
 
@@ -281,6 +286,7 @@ export async function lookupCensusGeographiesForAddress(address) {
         parseError instanceof Error ? parseError.message : "unknown"
       }`,
       geoLookupAt: new Date().toISOString(),
+      censusGeographiesQueryUrl: url,
     };
   }
 
@@ -293,10 +299,11 @@ export async function lookupCensusGeographiesForAddress(address) {
       geoLookupNotes: "No address match returned by Census Geographies",
       geoLookupAt: new Date().toISOString(),
       censusGeographiesRaw: data,
+      censusGeographiesQueryUrl: url,
     };
   }
 
-  const extracted = extractCensusGeoFields(data);
+  const extracted = extractCensusGeoFields(data, url);
 
   // If the source site lacked coordinates, the response may include them.
   const matchCoords = matches[0]?.coordinates;

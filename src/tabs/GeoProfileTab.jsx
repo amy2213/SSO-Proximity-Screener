@@ -74,6 +74,7 @@ export default function GeoProfileTab({
   geoLookupProgress,
   lookupGeoForSelectedSite,
   lookupMissingGeoForSites,
+  applyPastedCensusGeoJsonToSelectedSite,
   areaLookupBusy,
   areaLookupProgress,
   lookupAreaForSelectedSite,
@@ -81,6 +82,9 @@ export default function GeoProfileTab({
 }) {
   const [radius, setRadius] = useState(2.5);
   const [customRadius, setCustomRadius] = useState("");
+  const [pastedJson, setPastedJson] = useState("");
+  const [pasteFeedback, setPasteFeedback] = useState(null);
+  const [copyFeedback, setCopyFeedback] = useState("");
 
   const selected = activeSites.find((s) => s.id === selectedGeoSiteId) || null;
 
@@ -150,6 +154,31 @@ export default function GeoProfileTab({
   function handleRadiusPreset(value) {
     setRadius(value);
     setCustomRadius("");
+  }
+
+  function handleApplyPastedJson() {
+    if (typeof applyPastedCensusGeoJsonToSelectedSite !== "function") return;
+    const result = applyPastedCensusGeoJsonToSelectedSite(pastedJson);
+    setPasteFeedback(result);
+    if (result?.ok) setPastedJson("");
+  }
+
+  async function handleCopyQueryUrl() {
+    const url = selected?.censusGeographiesQueryUrl;
+    if (!url) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+        setCopyFeedback("Copied to clipboard.");
+      } else {
+        setCopyFeedback("Clipboard API unavailable. Select the link and copy manually.");
+      }
+    } catch (err) {
+      setCopyFeedback(
+        `Could not copy: ${err instanceof Error ? err.message : "unknown error"}. Select the link and copy manually.`,
+      );
+    }
+    setTimeout(() => setCopyFeedback(""), 4000);
   }
 
   function handleCustomRadius(e) {
@@ -502,6 +531,190 @@ export default function GeoProfileTab({
                 Same Block Group / Same Tract comparisons.
               </div>
             )}
+          </div>
+
+          <div style={card}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <SectionTitle>Manual Census Geography Fallback</SectionTitle>
+            </div>
+
+            {selected.geoLookupStatus === "Error" && selected.censusGeographiesQueryUrl ? (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: "10px 14px",
+                  background: C.redLight,
+                  border: "1px solid #f5c6c6",
+                  borderRadius: 4,
+                  fontSize: 12,
+                  color: C.gray700,
+                  lineHeight: 1.5,
+                }}
+              >
+                <div style={{ marginBottom: 6 }}>
+                  <strong>The in-app fetch failed.</strong>{" "}
+                  Open the Census query link below to verify the response in your browser. If the
+                  query opens successfully, copy the JSON response and paste it below to apply the
+                  geographies to this site.
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    marginTop: 6,
+                  }}
+                >
+                  <a
+                    href={selected.censusGeographiesQueryUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: C.navy, fontSize: 11, wordBreak: "break-all", maxWidth: 480 }}
+                  >
+                    Open Census query link
+                  </a>
+                  <button type="button" style={btnSecondary} onClick={handleCopyQueryUrl}>
+                    Copy query URL
+                  </button>
+                  {copyFeedback && (
+                    <span style={{ fontSize: 11, color: C.gray500 }}>{copyFeedback}</span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: C.gray500,
+                    marginTop: 6,
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {selected.censusGeographiesQueryUrl}
+                </div>
+              </div>
+            ) : selected.censusGeographiesQueryUrl ? (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: "10px 14px",
+                  background: C.gray50,
+                  border: `1px solid ${C.gray200}`,
+                  borderRadius: 4,
+                  fontSize: 11,
+                  color: C.gray700,
+                  lineHeight: 1.5,
+                }}
+              >
+                Last attempted Census query URL for this site:{" "}
+                <a
+                  href={selected.censusGeographiesQueryUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: C.navy, wordBreak: "break-all" }}
+                >
+                  open
+                </a>
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: "10px 14px",
+                  background: C.gray50,
+                  border: `1px solid ${C.gray200}`,
+                  borderRadius: 4,
+                  fontSize: 11,
+                  color: C.gray700,
+                  lineHeight: 1.5,
+                }}
+              >
+                No Census query has been attempted for this site yet. Use{" "}
+                <strong>Lookup Census Geography for Selected</strong> above first; the URL it tries
+                will appear here so you can re-run it manually if the in-app fetch fails.
+              </div>
+            )}
+
+            <label
+              style={{ display: "block", marginBottom: 6 }}
+              htmlFor="pasted-census-json"
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: C.gray700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                Paste Census geography JSON
+              </span>
+            </label>
+            <textarea
+              id="pasted-census-json"
+              value={pastedJson}
+              onChange={(e) => setPastedJson(e.target.value)}
+              placeholder='{"result":{"geographies":{"Census Tracts":[...]}}}'
+              spellCheck={false}
+              style={{
+                width: "100%",
+                minHeight: 120,
+                padding: "8px 10px",
+                border: `1px solid ${C.gray200}`,
+                borderRadius: 4,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                fontSize: 11,
+                lineHeight: 1.4,
+                resize: "vertical",
+                background: C.white,
+                color: C.gray900,
+                boxSizing: "border-box",
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                flexWrap: "wrap",
+                marginTop: 8,
+              }}
+            >
+              <button
+                type="button"
+                style={btnPrimary}
+                onClick={handleApplyPastedJson}
+                disabled={!pastedJson.trim()}
+              >
+                Apply pasted Census JSON to selected site
+              </button>
+              {pasteFeedback && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: pasteFeedback.ok ? C.green : C.red,
+                  }}
+                >
+                  {pasteFeedback.message}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 10, color: C.gray500, marginTop: 8, lineHeight: 1.5 }}>
+              The pasted response is parsed locally and run through the same field extractor as
+              the in-app fetch. The site's <code>geoLookupStatus</code> is set to{" "}
+              <strong>Looked Up</strong> with source{" "}
+              <em>US Census Geographies - pasted response</em>. Existing latitude / longitude is
+              preserved unless the site lacked coordinates and the pasted response is an
+              address-style payload that includes them.
+            </div>
           </div>
 
           <div style={card}>

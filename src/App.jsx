@@ -21,7 +21,10 @@ import ReferenceMapsTab from "./tabs/ReferenceMapsTab.jsx";
 import SiteWorkspaceTab from "./tabs/SiteWorkspaceTab.jsx";
 import TdaImportTab from "./tabs/TdaImportTab.jsx";
 import { lookupAreaEligibilityByCbg } from "./utils/areaEligibility.js";
-import { lookupCensusGeographiesForSite } from "./utils/censusGeographies.js";
+import {
+  extractCensusGeoFields,
+  lookupCensusGeographiesForSite,
+} from "./utils/censusGeographies.js";
 import { hasValidCoords, isBlank, toNumberOrBlank } from "./utils/coords.js";
 import { downloadCSV, normalizeHeader, parseCSVLine } from "./utils/csv.js";
 import { haversine } from "./utils/distance.js";
@@ -309,6 +312,7 @@ export default function App() {
     "Census Block GEOID",
     "Census Place GEOID",
     "Census Place Name",
+    "Census Geographies Query URL",
     "Area Lookup Status",
     "Area Lookup Source",
     "Area Lookup At",
@@ -366,6 +370,7 @@ export default function App() {
       "Census Block GEOID": s.censusBlockGEOID || "",
       "Census Place GEOID": s.censusPlaceGEOID || "",
       "Census Place Name": s.censusPlaceName || "",
+      "Census Geographies Query URL": s.censusGeographiesQueryUrl || "",
       "Area Lookup Status": s.areaLookupStatus || "",
       "Area Lookup Source": s.areaLookupSource || "",
       "Area Lookup At": s.areaLookupAt || "",
@@ -507,6 +512,7 @@ export default function App() {
         "census block geoid": ["census block geoid"],
         "census place geoid": ["census place geoid"],
         "census place name": ["census place name"],
+        "census geographies query url": ["census geographies query url"],
         "area lookup status": ["area lookup status"],
         "area lookup source": ["area lookup source"],
         "area lookup at": ["area lookup at"],
@@ -585,6 +591,7 @@ export default function App() {
             censusPlaceGEOID: findValue(vals, "census place geoid") || "",
             censusPlaceName: findValue(vals, "census place name") || "",
             censusGeographiesRaw: null,
+            censusGeographiesQueryUrl: findValue(vals, "census geographies query url") || "",
             areaLookupStatus: findValue(vals, "area lookup status") || "",
             areaLookupSource: findValue(vals, "area lookup source") || "",
             areaLookupAt: findValue(vals, "area lookup at") || "",
@@ -979,6 +986,10 @@ export default function App() {
           censusPlaceGEOID: result.censusPlaceGEOID,
           censusPlaceName: result.censusPlaceName,
           censusGeographiesRaw: result.censusGeographiesRaw,
+          censusGeographiesQueryUrl:
+            result.censusGeographiesQueryUrl !== undefined
+              ? result.censusGeographiesQueryUrl
+              : s.censusGeographiesQueryUrl || "",
         };
         if (
           !hasValidCoords(s) &&
@@ -1105,6 +1116,73 @@ export default function App() {
 
     setGeoLookupBusy(false);
   }, [sites]);
+
+  const applyPastedCensusGeoJsonToSelectedSite = useCallback(
+    (jsonText) => {
+      if (!selectedGeoSiteId) {
+        return { ok: false, message: "Select a site first." };
+      }
+      const target = sites.find((s) => s.id === selectedGeoSiteId);
+      if (!target) {
+        return { ok: false, message: "Selected site not found." };
+      }
+      const trimmed = (jsonText || "").toString().trim();
+      if (!trimmed) {
+        return { ok: false, message: "Paste a Census Geographies JSON response first." };
+      }
+      let data;
+      try {
+        data = JSON.parse(trimmed);
+      } catch (parseErr) {
+        return {
+          ok: false,
+          message: `Could not parse JSON: ${
+            parseErr instanceof Error ? parseErr.message : "unknown error"
+          }`,
+        };
+      }
+
+      const queryUrl = target.censusGeographiesQueryUrl || "";
+      const extracted = extractCensusGeoFields(data, queryUrl);
+      extracted.geoLookupStatus = "Looked Up";
+      extracted.geoLookupSource = "US Census Geographies - pasted response";
+      extracted.geoLookupNotes = "Applied from pasted Census query response";
+      extracted.geoLookupAt = new Date().toISOString();
+
+      // If the pasted response is an address-style payload with coordinates,
+      // surface them only when the site lacks coordinates.
+      const matches = data?.result?.addressMatches;
+      if (Array.isArray(matches) && matches.length > 0) {
+        const matchCoords = matches[0]?.coordinates;
+        if (
+          matchCoords &&
+          Number.isFinite(Number(matchCoords.x)) &&
+          Number.isFinite(Number(matchCoords.y))
+        ) {
+          extracted._matchedLat = Number(matchCoords.y);
+          extracted._matchedLon = Number(matchCoords.x);
+          extracted._matchedAddress = matches[0]?.matchedAddress || "";
+        }
+      }
+
+      applyGeoLookupResultToSite(target.id, extracted);
+
+      const tract = extracted.censusTractGEOID || "";
+      const cbg = extracted.censusBlockGroupGEOID || "";
+      if (!tract && !cbg) {
+        return {
+          ok: false,
+          message:
+            "Pasted JSON parsed, but no recognizable Census geographies were extracted. Confirm the JSON is the Census Geographies API response and try again.",
+        };
+      }
+      return {
+        ok: true,
+        message: `Applied. Tract ${tract || "(missing)"} · CBG ${cbg || "(missing)"}.`,
+      };
+    },
+    [selectedGeoSiteId, sites],
+  );
 
   const applyAreaLookupResultToSite = (siteId, result) => {
     setSites((prev) =>
@@ -1372,6 +1450,7 @@ export default function App() {
             geoLookupProgress={geoLookupProgress}
             lookupGeoForSelectedSite={lookupGeoForSelectedSite}
             lookupMissingGeoForSites={lookupMissingGeoForSites}
+            applyPastedCensusGeoJsonToSelectedSite={applyPastedCensusGeoJsonToSelectedSite}
             areaLookupBusy={areaLookupBusy}
             areaLookupProgress={areaLookupProgress}
             lookupAreaForSelectedSite={lookupAreaForSelectedSite}
