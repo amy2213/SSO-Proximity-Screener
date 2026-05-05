@@ -20,6 +20,7 @@ import NearbySitesTab from "./tabs/NearbySitesTab.jsx";
 import ReferenceMapsTab from "./tabs/ReferenceMapsTab.jsx";
 import SiteWorkspaceTab from "./tabs/SiteWorkspaceTab.jsx";
 import TdaImportTab from "./tabs/TdaImportTab.jsx";
+import { lookupAreaEligibilityByCbg } from "./utils/areaEligibility.js";
 import { lookupCensusGeographiesForSite } from "./utils/censusGeographies.js";
 import { hasValidCoords, isBlank, toNumberOrBlank } from "./utils/coords.js";
 import { downloadCSV, normalizeHeader, parseCSVLine } from "./utils/csv.js";
@@ -57,6 +58,14 @@ export default function App() {
     completed: 0,
     resolved: 0,
     issues: 0,
+    statusText: "",
+  });
+  const [areaLookupBusy, setAreaLookupBusy] = useState(false);
+  const [areaLookupProgress, setAreaLookupProgress] = useState({
+    queued: 0,
+    completed: 0,
+    found: 0,
+    notFound: 0,
     statusText: "",
   });
   const fileRef = useRef();
@@ -169,6 +178,9 @@ export default function App() {
       (sum, g) => sum + (Array.isArray(g.qaFlags) ? g.qaFlags.length : 0),
       0,
     );
+    const areaCbgFound = activeSites.filter((s) => s.areaLookupStatus === "Looked Up").length;
+    const areaCbgNotFound = activeSites.filter((s) => s.areaLookupStatus === "No Match").length;
+    const areaReferencesChecked = areaCbgFound + areaCbgNotFound;
     const needsManualVerification = activeSites.filter((s) => {
       if (!hasValidCoords(s)) return true;
       const status = s.geocodeStatus;
@@ -214,6 +226,9 @@ export default function App() {
       withCensusTract,
       withCensusBlockGroup,
       totalQaFlags,
+      areaReferencesChecked,
+      areaCbgFound,
+      areaCbgNotFound,
       needsManualVerification,
       multiNearby,
       closestPairs,
@@ -294,6 +309,18 @@ export default function App() {
     "Census Block GEOID",
     "Census Place GEOID",
     "Census Place Name",
+    "Area Lookup Status",
+    "Area Lookup Source",
+    "Area Lookup At",
+    "Area Lookup Notes",
+    "Area Source FY",
+    "Area CBG GEOID",
+    "Area Tract GEOID",
+    "Area County Name",
+    "Area SFSP Flag",
+    "Area CACFP Flag",
+    "Area SFSP Percent",
+    "Area CACFP Percent",
     "QA Flags",
   ];
 
@@ -339,6 +366,20 @@ export default function App() {
       "Census Block GEOID": s.censusBlockGEOID || "",
       "Census Place GEOID": s.censusPlaceGEOID || "",
       "Census Place Name": s.censusPlaceName || "",
+      "Area Lookup Status": s.areaLookupStatus || "",
+      "Area Lookup Source": s.areaLookupSource || "",
+      "Area Lookup At": s.areaLookupAt || "",
+      "Area Lookup Notes": s.areaLookupNotes || "",
+      "Area Source FY": s.areaSourceFy || "",
+      "Area CBG GEOID": s.areaCbgGeoid || "",
+      "Area Tract GEOID": s.areaTractGeoid || "",
+      "Area County Name": s.areaCountyName || "",
+      "Area SFSP Flag": s.areaSfspFlag || "",
+      "Area CACFP Flag": s.areaCacfpFlag || "",
+      "Area SFSP Percent":
+        s.areaSfspPercent === "" || s.areaSfspPercent == null ? "" : s.areaSfspPercent,
+      "Area CACFP Percent":
+        s.areaCacfpPercent === "" || s.areaCacfpPercent == null ? "" : s.areaCacfpPercent,
       "QA Flags": Array.isArray(s.qaFlags)
         ? s.qaFlags.map((f) => f.label).join("; ")
         : "",
@@ -466,6 +507,18 @@ export default function App() {
         "census block geoid": ["census block geoid"],
         "census place geoid": ["census place geoid"],
         "census place name": ["census place name"],
+        "area lookup status": ["area lookup status"],
+        "area lookup source": ["area lookup source"],
+        "area lookup at": ["area lookup at"],
+        "area lookup notes": ["area lookup notes"],
+        "area source fy": ["area source fy"],
+        "area cbg geoid": ["area cbg geoid"],
+        "area tract geoid": ["area tract geoid"],
+        "area county name": ["area county name"],
+        "area sfsp flag": ["area sfsp flag"],
+        "area cacfp flag": ["area cacfp flag"],
+        "area sfsp percent": ["area sfsp percent"],
+        "area cacfp percent": ["area cacfp percent"],
       };
 
       const findValue = (values, key) => {
@@ -532,6 +585,18 @@ export default function App() {
             censusPlaceGEOID: findValue(vals, "census place geoid") || "",
             censusPlaceName: findValue(vals, "census place name") || "",
             censusGeographiesRaw: null,
+            areaLookupStatus: findValue(vals, "area lookup status") || "",
+            areaLookupSource: findValue(vals, "area lookup source") || "",
+            areaLookupAt: findValue(vals, "area lookup at") || "",
+            areaLookupNotes: findValue(vals, "area lookup notes") || "",
+            areaSourceFy: findValue(vals, "area source fy") || "",
+            areaCbgGeoid: findValue(vals, "area cbg geoid") || "",
+            areaTractGeoid: findValue(vals, "area tract geoid") || "",
+            areaCountyName: findValue(vals, "area county name") || "",
+            areaSfspFlag: findValue(vals, "area sfsp flag") || "",
+            areaCacfpFlag: findValue(vals, "area cacfp flag") || "",
+            areaSfspPercent: toNumberOrBlank(findValue(vals, "area sfsp percent")),
+            areaCacfpPercent: toNumberOrBlank(findValue(vals, "area cacfp percent")),
           };
         })
         .filter((s) => s.id.trim())
@@ -1041,6 +1106,137 @@ export default function App() {
     setGeoLookupBusy(false);
   }, [sites]);
 
+  const applyAreaLookupResultToSite = (siteId, result) => {
+    setSites((prev) =>
+      prev.map((s) => {
+        if (s.id !== siteId) return s;
+        return {
+          ...s,
+          areaLookupStatus: result.status,
+          areaLookupSource: result.found ? result.sourceName || "" : result.sourceName || "",
+          areaLookupAt: new Date().toISOString(),
+          areaLookupNotes: result.notes || "",
+          areaSourceFy: result.sourceFy || "",
+          areaCbgGeoid: result.geoid || "",
+          areaTractGeoid: result.tractGeoid || "",
+          areaCountyName: result.countyName || "",
+          areaSfspFlag: result.sfspFlag || "",
+          areaCacfpFlag: result.cacfpFlag || "",
+          areaSfspPercent: result.sfspPercent === "" || result.sfspPercent == null ? "" : result.sfspPercent,
+          areaCacfpPercent:
+            result.cacfpPercent === "" || result.cacfpPercent == null ? "" : result.cacfpPercent,
+        };
+      }),
+    );
+  };
+
+  const lookupAreaForSelectedSite = useCallback(async () => {
+    if (!selectedGeoSiteId) return;
+    const target = sites.find((s) => s.id === selectedGeoSiteId);
+    if (!target) return;
+
+    if (!target.censusBlockGroupGEOID) {
+      applyAreaLookupResultToSite(target.id, {
+        status: "Needs Census geography",
+        found: false,
+        notes: "Run Census geography lookup first to obtain the CBG GEOID.",
+      });
+      setAreaLookupProgress({
+        queued: 1,
+        completed: 1,
+        found: 0,
+        notFound: 0,
+        statusText: "Selected site has no Census Block Group GEOID yet.",
+      });
+      return;
+    }
+
+    setAreaLookupBusy(true);
+    setAreaLookupProgress({
+      queued: 1,
+      completed: 0,
+      found: 0,
+      notFound: 0,
+      statusText: `Looking up FNS area reference for ${target.id}`,
+    });
+
+    const result = await lookupAreaEligibilityByCbg(target.censusBlockGroupGEOID);
+    const status = result.found ? "Looked Up" : "No Match";
+    applyAreaLookupResultToSite(target.id, { ...result, status });
+
+    setAreaLookupProgress({
+      queued: 1,
+      completed: 1,
+      found: result.found ? 1 : 0,
+      notFound: result.found ? 0 : 1,
+      statusText: result.found
+        ? `Found CBG ${result.geoid}.`
+        : result.notes || "No match found.",
+    });
+    setAreaLookupBusy(false);
+  }, [selectedGeoSiteId, sites]);
+
+  const lookupMissingAreaForSites = useCallback(async () => {
+    const targets = sites.filter((s) => {
+      if (!s.id || !s.id.toString().trim()) return false;
+      if (!s.censusBlockGroupGEOID) return false;
+      return !s.areaLookupStatus || s.areaLookupStatus === "Needs Census geography";
+    });
+
+    if (!targets.length) {
+      setAreaLookupProgress({
+        queued: 0,
+        completed: 0,
+        found: 0,
+        notFound: 0,
+        statusText:
+          "No sites need an FNS area lookup. (Sites without a Census Block Group GEOID are skipped.)",
+      });
+      return;
+    }
+
+    setAreaLookupBusy(true);
+    setAreaLookupProgress({
+      queued: targets.length,
+      completed: 0,
+      found: 0,
+      notFound: 0,
+      statusText: `Queued ${targets.length} site(s) for FNS area lookup`,
+    });
+
+    let completed = 0;
+    let found = 0;
+    let notFound = 0;
+
+    for (const target of targets) {
+      setAreaLookupProgress((prev) => ({
+        ...prev,
+        statusText: `Looking up ${target.id} (${completed + 1} of ${targets.length})`,
+      }));
+
+      const result = await lookupAreaEligibilityByCbg(target.censusBlockGroupGEOID);
+      const status = result.found ? "Looked Up" : "No Match";
+      applyAreaLookupResultToSite(target.id, { ...result, status });
+
+      completed += 1;
+      if (result.found) found += 1;
+      else notFound += 1;
+
+      setAreaLookupProgress({
+        queued: targets.length,
+        completed,
+        found,
+        notFound,
+        statusText:
+          completed === targets.length
+            ? `Done: ${found} found, ${notFound} not found.`
+            : `Completed ${completed} of ${targets.length}`,
+      });
+    }
+
+    setAreaLookupBusy(false);
+  }, [sites]);
+
   return (
     <div
       style={{
@@ -1176,6 +1372,10 @@ export default function App() {
             geoLookupProgress={geoLookupProgress}
             lookupGeoForSelectedSite={lookupGeoForSelectedSite}
             lookupMissingGeoForSites={lookupMissingGeoForSites}
+            areaLookupBusy={areaLookupBusy}
+            areaLookupProgress={areaLookupProgress}
+            lookupAreaForSelectedSite={lookupAreaForSelectedSite}
+            lookupMissingAreaForSites={lookupMissingAreaForSites}
           />
         )}
 

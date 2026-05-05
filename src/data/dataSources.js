@@ -42,10 +42,10 @@ export const DATA_SOURCES = [
   {
     name: "FNS / TDA Area Eligibility Data",
     purpose:
-      "Planned reference: lookup CBG / Census tract area-data attributes by GEOID using an official source data file in a future phase, matched against the Census tract / block group identifiers Site Signal already records on each location.",
-    status: "Planned",
+      "Lookup the FNS-published area eligibility flag and percentage for a site's 12-digit Census Block Group GEOID, surfaced in Geo Profile as a public-data reference. Source files live in public/data/fns_area_eligibility/ keyed by fiscal year (sample fy26_TX_sample.csv shipped today; replace with the official Texas extract from the USDA-FNS hub).",
+    status: "Active sample reference",
     caveat:
-      "Requires an official source data file. Not integrated. When integrated it will remain reference-only — Site Signal will not make eligibility, approval, denial, waiver, or compliance decisions.",
+      "Uses USDA-FNS published area eligibility data by Census Block Group GEOID. Reference only; not a determination. Verify the FY/source file used. The 5-year area-eligibility re-determination rule means the FY of the file used must match the determination period for any site being reviewed.",
   },
 ];
 

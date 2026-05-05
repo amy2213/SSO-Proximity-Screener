@@ -6,6 +6,7 @@ import Td from "../components/Td.jsx";
 import Th from "../components/Th.jsx";
 import { CAUTION_MI, CONFLICT_MI, GLOBAL_DISCLAIMER, PAIR_STATUS } from "../constants.js";
 import { C, btnPrimary, btnSecondary, card, input, tableWrap } from "../styles.js";
+import { describeFlag } from "../utils/areaEligibility.js";
 import { hasValidCoords } from "../utils/coords.js";
 import { downloadCSV } from "../utils/csv.js";
 import { haversine } from "../utils/distance.js";
@@ -73,6 +74,10 @@ export default function GeoProfileTab({
   geoLookupProgress,
   lookupGeoForSelectedSite,
   lookupMissingGeoForSites,
+  areaLookupBusy,
+  areaLookupProgress,
+  lookupAreaForSelectedSite,
+  lookupMissingAreaForSites,
 }) {
   const [radius, setRadius] = useState(2.5);
   const [customRadius, setCustomRadius] = useState("");
@@ -130,6 +135,12 @@ export default function GeoProfileTab({
 
   const sitesNeedingGeo = activeSites.filter(
     (s) => !s.geoLookupStatus || s.geoLookupStatus === "Needs Location",
+  );
+
+  const sitesNeedingAreaLookup = activeSites.filter(
+    (s) =>
+      s.censusBlockGroupGEOID &&
+      (!s.areaLookupStatus || s.areaLookupStatus === "Needs Census geography"),
   );
 
   const showManualVerificationNote =
@@ -489,6 +500,195 @@ export default function GeoProfileTab({
                   : ""}
                 Confirm coordinates and Census geography against an authoritative map before relying on
                 Same Block Group / Same Tract comparisons.
+              </div>
+            )}
+          </div>
+
+          <div style={card}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <SectionTitle>Area Eligibility Reference</SectionTitle>
+              {selected.areaLookupStatus === "Looked Up" ? (
+                <Badge color="navy">FNS {selected.areaSourceFy || "AREA"} CBG REFERENCE</Badge>
+              ) : selected.areaLookupStatus === "No Match" ? (
+                <Badge color="yellow">NO MATCHING CBG RECORD FOUND</Badge>
+              ) : selected.areaLookupStatus === "Needs Census geography" ? (
+                <Badge color="yellow">NEEDS CENSUS GEOGRAPHY</Badge>
+              ) : (
+                <Badge color="gray">FNS AREA REFERENCE NOT CHECKED</Badge>
+              )}
+            </div>
+
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 14px",
+                background: C.gray50,
+                border: `1px solid ${C.gray200}`,
+                borderRadius: 4,
+                fontSize: 11,
+                color: C.gray700,
+                lineHeight: 1.5,
+              }}
+            >
+              <strong>Reference only.</strong> Site Signal joins the Census Block Group GEOID to a static
+              extract of USDA-FNS Area Eligibility data. Values shown are the FNS-published flags and
+              percentages; Site Signal does not compute or determine eligibility, approval, denial, waiver
+              requirements, or compliance. Manual source verification suggested before relying on these
+              values, and confirm the FY of the source file matches the determination period for the site.
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+                flexWrap: "wrap",
+                marginBottom: 12,
+              }}
+            >
+              <button
+                type="button"
+                style={btnPrimary}
+                onClick={lookupAreaForSelectedSite}
+                disabled={!selected || areaLookupBusy}
+              >
+                {areaLookupBusy ? "Looking up..." : "Lookup FNS Area Reference for Selected"}
+              </button>
+              <button
+                type="button"
+                style={btnSecondary}
+                onClick={lookupMissingAreaForSites}
+                disabled={areaLookupBusy || sitesNeedingAreaLookup.length === 0}
+              >
+                Lookup Missing FNS Area References ({sitesNeedingAreaLookup.length})
+              </button>
+            </div>
+
+            {(areaLookupBusy ||
+              (areaLookupProgress &&
+                (areaLookupProgress.completed > 0 || areaLookupProgress.statusText))) && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: "10px 14px",
+                  background: C.goldLight,
+                  border: "1px solid #e8d8a0",
+                  borderRadius: 4,
+                  fontSize: 12,
+                  color: C.gray700,
+                }}
+              >
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+                  <span>
+                    <strong>Queued:</strong> {areaLookupProgress?.queued || 0}
+                  </span>
+                  <span>
+                    <strong>Completed:</strong> {areaLookupProgress?.completed || 0}
+                  </span>
+                  <span>
+                    <strong>Found:</strong> {areaLookupProgress?.found || 0}
+                  </span>
+                  <span>
+                    <strong>Not found:</strong> {areaLookupProgress?.notFound || 0}
+                  </span>
+                  {areaLookupProgress?.statusText && (
+                    <span style={{ color: C.gray500 }}>{areaLookupProgress.statusText}</span>
+                  )}
+                </div>
+                {areaLookupProgress?.queued > 0 && (
+                  <div
+                    style={{
+                      position: "relative",
+                      width: "100%",
+                      height: 8,
+                      background: C.gray200,
+                      borderRadius: 4,
+                      overflow: "hidden",
+                      marginTop: 8,
+                    }}
+                    role="progressbar"
+                    aria-valuenow={areaLookupProgress.completed}
+                    aria-valuemin={0}
+                    aria-valuemax={areaLookupProgress.queued}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.round(
+                            ((areaLookupProgress.completed || 0) / areaLookupProgress.queued) * 100,
+                          ),
+                        )}%`,
+                        height: "100%",
+                        background: C.navy,
+                        transition: "width 0.2s ease",
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            <ProfileRow label="FNS Source FY">{selected.areaSourceFy}</ProfileRow>
+            <ProfileRow label="FNS Source Name">{selected.areaLookupSource}</ProfileRow>
+            <ProfileRow label="CBG GEOID Used">{selected.areaCbgGeoid}</ProfileRow>
+            <ProfileRow label="Tract GEOID Derived">{selected.areaTractGeoid}</ProfileRow>
+            <ProfileRow label="County">{selected.areaCountyName}</ProfileRow>
+            <ProfileRow label="SFSP Flag">
+              {selected.areaSfspFlag ? (
+                <Badge color={selected.areaSfspFlag === "Y" ? "navy" : "gray"}>
+                  {describeFlag(selected.areaSfspFlag)}
+                </Badge>
+              ) : (
+                <span style={{ color: C.gray500 }}>—</span>
+              )}
+            </ProfileRow>
+            <ProfileRow label="CACFP Flag">
+              {selected.areaCacfpFlag ? (
+                <Badge color={selected.areaCacfpFlag === "Y" ? "navy" : "gray"}>
+                  {describeFlag(selected.areaCacfpFlag)}
+                </Badge>
+              ) : (
+                <span style={{ color: C.gray500 }}>—</span>
+              )}
+            </ProfileRow>
+            <ProfileRow label="SFSP Percent (FNS)">
+              {selected.areaSfspPercent === "" || selected.areaSfspPercent == null
+                ? ""
+                : `${Number(selected.areaSfspPercent).toFixed(1)} %`}
+            </ProfileRow>
+            <ProfileRow label="CACFP Percent (FNS)">
+              {selected.areaCacfpPercent === "" || selected.areaCacfpPercent == null
+                ? ""
+                : `${Number(selected.areaCacfpPercent).toFixed(1)} %`}
+            </ProfileRow>
+            <ProfileRow label="Lookup At">{formatDate(selected.areaLookupAt)}</ProfileRow>
+            <ProfileRow label="Lookup Notes">{selected.areaLookupNotes}</ProfileRow>
+
+            {!selected.censusBlockGroupGEOID && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: "8px 12px",
+                  background: C.yellowLight,
+                  border: "1px solid #f5e6a3",
+                  borderRadius: 4,
+                  fontSize: 11,
+                  color: C.gray700,
+                  lineHeight: 1.5,
+                }}
+              >
+                <strong>Needs Census geography.</strong> Run <em>Lookup Census Geography for Selected</em>
+                {" "}first to populate <code>censusBlockGroupGEOID</code>; the FNS area reference is keyed
+                on that 12-digit ID.
               </div>
             )}
           </div>

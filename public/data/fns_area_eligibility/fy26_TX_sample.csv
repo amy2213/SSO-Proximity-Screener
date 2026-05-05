@@ -1,0 +1,13 @@
+GEOID,County Name,State Name,SFSP Eligible,CACFP Eligible,SFSP Percent,CACFP Percent,Source FY,Source Name,Source URL
+480970011001,Cooke County,TX,N,N,28.5,28.5,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+484530011023,Travis County,TX,Y,Y,62.4,62.4,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+484530011024,Travis County,TX,Y,Y,55.1,55.1,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+484530011022,Travis County,TX,N,N,42.3,42.3,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+482010001001,Harris County,TX,Y,Y,71.8,71.8,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+482010001002,Harris County,TX,Y,Y,67.2,67.2,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+481130001001,Dallas County,TX,Y,Y,68.3,68.3,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+481130001002,Dallas County,TX,N,N,38.7,38.7,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+480290001001,Bexar County,TX,Y,Y,59.6,59.6,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+484390001001,Tarrant County,TX,N,N,33.4,33.4,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+484390001002,Tarrant County,TX,Y,Y,52.9,52.9,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about
+482150001001,Hidalgo County,TX,Y,Y,78.5,78.5,FY26 (sample),USDA-FNS Area Eligibility (FY26 sample),https://usda-fns.hub.arcgis.com/datasets/USDA-FNS::participants-eligible-for-free-and-reduced-price-fy-26/about

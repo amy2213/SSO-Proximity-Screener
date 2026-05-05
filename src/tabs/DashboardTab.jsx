@@ -34,6 +34,22 @@ export default function DashboardTab({ stats }) {
         <MetricCard label="With Census Tract" value={stats.withCensusTract} accent={C.navy} />
         <MetricCard label="With Block Group" value={stats.withCensusBlockGroup} accent={C.navy} />
         <MetricCard
+          label="FNS Area Refs Checked"
+          value={stats.areaReferencesChecked}
+          accent={C.navy}
+          sub="Census Block Group lookups"
+        />
+        <MetricCard
+          label="FNS CBG Records Found"
+          value={stats.areaCbgFound}
+          accent={C.navy}
+        />
+        <MetricCard
+          label="FNS CBG Records Not Found"
+          value={stats.areaCbgNotFound}
+          accent={stats.areaCbgNotFound > 0 ? C.yellow : C.green}
+        />
+        <MetricCard
           label="Missing Coordinates"
           value={stats.missingCoords}
           accent={stats.missingCoords > 0 ? C.yellow : C.green}
