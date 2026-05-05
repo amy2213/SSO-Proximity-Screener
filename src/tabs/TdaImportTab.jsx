@@ -15,6 +15,7 @@ export default function TdaImportTab({
   tdaSelectedIds,
   tdaStatus,
   tdaLoading,
+  tdaSkippedDetails,
   setTdaQuery,
   setTdaLimit,
   searchTdaImport,
@@ -140,6 +141,41 @@ export default function TdaImportTab({
           }}
         >
           {tdaStatus.text}
+        </div>
+      )}
+
+      {Array.isArray(tdaSkippedDetails) && tdaSkippedDetails.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: C.gray700,
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+              marginBottom: 6,
+            }}
+          >
+            Skipped during last import ({tdaSkippedDetails.length})
+          </div>
+          <div style={{ ...tableWrap, maxHeight: 220 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <Th>Site Name</Th>
+                  <Th>Reason Skipped</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {tdaSkippedDetails.map((row, i) => (
+                  <tr key={`skipped-${i}`} style={{ background: i % 2 ? C.gray50 : C.white }}>
+                    <Td style={{ fontSize: 11 }}>{row.name}</Td>
+                    <Td style={{ fontSize: 11, color: C.gray700 }}>{row.reason}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

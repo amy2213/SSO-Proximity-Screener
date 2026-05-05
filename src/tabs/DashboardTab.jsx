@@ -60,6 +60,12 @@ export default function DashboardTab({ stats }) {
           value={stats.needsManualVerification}
           accent={stats.needsManualVerification > 0 ? C.yellow : C.green}
         />
+        <MetricCard
+          label="QA Flags"
+          value={stats.totalQaFlags}
+          accent={stats.totalQaFlags > 0 ? C.yellow : C.green}
+          sub="Total across all locations"
+        />
       </div>
 
       <div style={contentGridStyle}>

@@ -1,10 +1,24 @@
+import { useState } from "react";
+
 import Badge from "../components/Badge.jsx";
 import SectionTitle from "../components/SectionTitle.jsx";
 import Td from "../components/Td.jsx";
 import Th from "../components/Th.jsx";
 import { CAUTION_MI, CONFLICT_MI, GLOBAL_DISCLAIMER, PAIR_STATUS } from "../constants.js";
-import { C, btnPrimary, btnSecondary, card, tableWrap } from "../styles.js";
+import { C, btnPrimary, btnSecondary, card, input, tableWrap } from "../styles.js";
 import { hasValidCoords } from "../utils/coords.js";
+import { downloadCSV } from "../utils/csv.js";
+import { haversine } from "../utils/distance.js";
+
+const RADIUS_PRESETS = [0.5, 1, 2, 2.5, 5, 10];
+const NEAREST_TABLE_LIMIT = 10;
+const MANUAL_VERIFICATION_LOCATION_TYPES = new Set([
+  "Bus Stop",
+  "Mobile Route Stop",
+  "Intersection",
+  "Manual Pin",
+  "Other",
+]);
 
 function ProfileRow({ label, children }) {
   return (
@@ -44,6 +58,12 @@ function geoStatusBadge(status) {
   }
 }
 
+function formatDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+}
+
 export default function GeoProfileTab({
   activeSites,
   pairs,
@@ -54,6 +74,9 @@ export default function GeoProfileTab({
   lookupGeoForSelectedSite,
   lookupMissingGeoForSites,
 }) {
+  const [radius, setRadius] = useState(2.5);
+  const [customRadius, setCustomRadius] = useState("");
+
   const selected = activeSites.find((s) => s.id === selectedGeoSiteId) || null;
 
   const sameCbgSites = selected?.censusBlockGroupGEOID
@@ -65,26 +88,39 @@ export default function GeoProfileTab({
 
   const sameTractSites = selected?.censusTractGEOID
     ? activeSites.filter(
-        (s) =>
-          s.id !== selected.id && s.censusTractGEOID === selected.censusTractGEOID,
+        (s) => s.id !== selected.id && s.censusTractGEOID === selected.censusTractGEOID,
       )
     : [];
 
-  const nearbyPairs = selected
-    ? pairs
-        .filter(
-          (p) =>
-            (p.siteA.id === selected.id || p.siteB.id === selected.id) &&
-            p.dist !== null &&
-            p.dist < CAUTION_MI,
-        )
-        .map((p) => ({
-          other: p.siteA.id === selected.id ? p.siteB : p.siteA,
-          dist: p.dist,
-          status: p.status,
-        }))
-        .sort((a, b) => a.dist - b.dist)
-    : [];
+  const distanceRows =
+    selected && hasValidCoords(selected)
+      ? activeSites
+          .filter((s) => s.id !== selected.id && hasValidCoords(s))
+          .map((s) => {
+            const d = haversine(selected.lat, selected.lon, s.lat, s.lon);
+            const sameCbg = Boolean(
+              selected.censusBlockGroupGEOID &&
+                s.censusBlockGroupGEOID === selected.censusBlockGroupGEOID,
+            );
+            const sameTract = Boolean(
+              selected.censusTractGEOID && s.censusTractGEOID === selected.censusTractGEOID,
+            );
+            const status =
+              d == null
+                ? PAIR_STATUS.MISSING
+                : d < CONFLICT_MI
+                  ? PAIR_STATUS.WITHIN_2
+                  : d < CAUTION_MI
+                    ? PAIR_STATUS.VERIFY
+                    : PAIR_STATUS.OK;
+            return { other: s, dist: d, sameCbg, sameTract, status };
+          })
+          .filter((r) => r.dist != null)
+          .sort((a, b) => a.dist - b.dist)
+      : [];
+
+  const withinRadiusRows = distanceRows.filter((r) => r.dist <= radius);
+  const nearestRows = withinRadiusRows.slice(0, NEAREST_TABLE_LIMIT);
 
   const fullAddress = selected
     ? [selected.street, selected.city, [selected.state, selected.zip].filter(Boolean).join(" ")]
@@ -92,7 +128,94 @@ export default function GeoProfileTab({
         .join(", ")
     : "";
 
-  const sitesNeedingGeo = activeSites.filter((s) => !s.geoLookupStatus || s.geoLookupStatus === "Needs Location");
+  const sitesNeedingGeo = activeSites.filter(
+    (s) => !s.geoLookupStatus || s.geoLookupStatus === "Needs Location",
+  );
+
+  const showManualVerificationNote =
+    selected &&
+    (MANUAL_VERIFICATION_LOCATION_TYPES.has(selected.locationType) || !hasValidCoords(selected));
+
+  function handleRadiusPreset(value) {
+    setRadius(value);
+    setCustomRadius("");
+  }
+
+  function handleCustomRadius(e) {
+    const value = e.target.value;
+    setCustomRadius(value);
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0 && n <= 100) {
+      setRadius(n);
+    }
+  }
+
+  function exportSelectedGeoProfile() {
+    if (!selected) return;
+
+    const headers = [
+      "Section",
+      "Site ID",
+      "Site Name",
+      "CE / Sponsor",
+      "Source",
+      "Distance (mi)",
+      "Same Block Group",
+      "Same Tract",
+      "Latitude",
+      "Longitude",
+      "Census State FIPS",
+      "Census County FIPS",
+      "Census County Name",
+      "Census Tract GEOID",
+      "Census Block Group GEOID",
+      "Census Block GEOID",
+      "Census Place GEOID",
+      "Census Place Name",
+      "Geo Lookup Status",
+    ];
+
+    const fmtRow = (section, s, distance = "", sameCbg = "", sameTract = "") => ({
+      Section: section,
+      "Site ID": s.id || "",
+      "Site Name": s.name || "",
+      "CE / Sponsor": s.ce || "",
+      Source: s.source || "Manual Entry",
+      "Distance (mi)": distance,
+      "Same Block Group": sameCbg,
+      "Same Tract": sameTract,
+      Latitude: s.lat || "",
+      Longitude: s.lon || "",
+      "Census State FIPS": s.censusStateFips || "",
+      "Census County FIPS": s.censusCountyFips || "",
+      "Census County Name": s.censusCountyName || "",
+      "Census Tract GEOID": s.censusTractGEOID || "",
+      "Census Block Group GEOID": s.censusBlockGroupGEOID || "",
+      "Census Block GEOID": s.censusBlockGEOID || "",
+      "Census Place GEOID": s.censusPlaceGEOID || "",
+      "Census Place Name": s.censusPlaceName || "",
+      "Geo Lookup Status": s.geoLookupStatus || "",
+    });
+
+    const rows = [];
+    rows.push(fmtRow("Selected", selected));
+    sameCbgSites.forEach((s) => rows.push(fmtRow("Same Block Group", s)));
+    sameTractSites.forEach((s) => rows.push(fmtRow("Same Census Tract", s)));
+    withinRadiusRows.forEach((r) =>
+      rows.push(
+        fmtRow(
+          `Nearby (≤ ${radius} mi)`,
+          r.other,
+          r.dist.toFixed(2),
+          r.sameCbg ? "Y" : "N",
+          r.sameTract ? "Y" : "N",
+        ),
+      ),
+    );
+
+    const safeId = (selected.id || "site").toString().replace(/[^A-Za-z0-9_-]+/g, "_");
+    downloadCSV(rows, headers, `site_signal_geo_profile_${safeId}.csv`);
+  }
 
   return (
     <div style={card}>
@@ -186,6 +309,14 @@ export default function GeoProfileTab({
         >
           Lookup Missing Census Geography ({sitesNeedingGeo.length})
         </button>
+        <button
+          type="button"
+          style={btnSecondary}
+          onClick={exportSelectedGeoProfile}
+          disabled={!selected}
+        >
+          Export Selected Geo Profile CSV
+        </button>
       </div>
 
       {(geoLookupBusy ||
@@ -274,7 +405,19 @@ export default function GeoProfileTab({
             <ProfileRow label="Site ID">{selected.id}</ProfileRow>
             <ProfileRow label="Site Name">{selected.name}</ProfileRow>
             <ProfileRow label="CE / Sponsor">{selected.ce}</ProfileRow>
+            <ProfileRow label="Location Type">{selected.locationType}</ProfileRow>
             <ProfileRow label="Source">{selected.source || "Manual Entry"}</ProfileRow>
+            <ProfileRow label="Source Dataset">
+              {selected.sourceDataset || ""}
+              {selected.sourceDatasetId ? (
+                <span style={{ color: C.gray500 }}>
+                  {selected.sourceDataset ? " · " : ""}
+                  ID {selected.sourceDatasetId}
+                </span>
+              ) : null}
+            </ProfileRow>
+            <ProfileRow label="Source Record ID">{selected.sourceRecordId}</ProfileRow>
+            <ProfileRow label="Imported At">{formatDate(selected.importedAt)}</ProfileRow>
             <ProfileRow label="Address">{fullAddress}</ProfileRow>
             <ProfileRow label="Latitude / Longitude">
               {hasValidCoords(selected)
@@ -282,6 +425,13 @@ export default function GeoProfileTab({
                 : ""}
             </ProfileRow>
             <ProfileRow label="Coordinate Source">{selected.coordinateSource}</ProfileRow>
+            <ProfileRow label="Geocode Status">
+              {selected.geocodeStatus ? (
+                <Badge color="navy">{selected.geocodeStatus.toUpperCase()}</Badge>
+              ) : (
+                <Badge color="gray">NOT CHECKED</Badge>
+              )}
+            </ProfileRow>
 
             <div style={{ height: 1, background: C.gray200, margin: "10px 0" }} />
 
@@ -306,18 +456,171 @@ export default function GeoProfileTab({
                 ? `${selected.censusPlaceName || ""} — GEOID ${selected.censusPlaceGEOID}`
                 : ""}
             </ProfileRow>
-            <ProfileRow label="Geo Lookup At">
-              {selected.geoLookupAt
-                ? new Date(selected.geoLookupAt).toLocaleString()
-                : ""}
-            </ProfileRow>
+            <ProfileRow label="Geo Lookup At">{formatDate(selected.geoLookupAt)}</ProfileRow>
             <ProfileRow label="Geo Lookup Source">{selected.geoLookupSource}</ProfileRow>
             <ProfileRow label="Geo Lookup Notes">{selected.geoLookupNotes}</ProfileRow>
 
-            {!selected.geoLookupStatus && (
+            {!selected.censusTractGEOID && !selected.censusBlockGroupGEOID && (
               <div style={{ marginTop: 12, fontSize: 11, color: C.gray500 }}>
                 Census geography not checked. Click <strong>Lookup Census Geography for Selected</strong> to populate
                 these fields. Manual verification suggested before relying on any single layer.
+              </div>
+            )}
+
+            {showManualVerificationNote && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: "8px 12px",
+                  background: C.yellowLight,
+                  border: "1px solid #f5e6a3",
+                  borderRadius: 4,
+                  fontSize: 11,
+                  color: C.gray700,
+                  lineHeight: 1.5,
+                }}
+              >
+                <strong>Manual verification suggested.</strong>{" "}
+                {MANUAL_VERIFICATION_LOCATION_TYPES.has(selected.locationType)
+                  ? `Location type "${selected.locationType}" often resolves imprecisely with public geocoders. `
+                  : ""}
+                {!hasValidCoords(selected)
+                  ? "This site does not yet have valid coordinates. "
+                  : ""}
+                Confirm coordinates and Census geography against an authoritative map before relying on
+                Same Block Group / Same Tract comparisons.
+              </div>
+            )}
+          </div>
+
+          <div style={card}>
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "flex-end",
+                flexWrap: "wrap",
+                marginBottom: 12,
+              }}
+            >
+              <SectionTitle>Nearest workspace locations</SectionTitle>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                flexWrap: "wrap",
+                marginBottom: 12,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: C.gray700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                Within radius:
+              </span>
+              {RADIUS_PRESETS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => handleRadiusPreset(preset)}
+                  style={{
+                    ...btnSecondary,
+                    background: radius === preset && !customRadius ? C.navy : C.gray100,
+                    color: radius === preset && !customRadius ? C.white : C.navy,
+                    padding: "6px 10px",
+                  }}
+                >
+                  {preset} mi
+                </button>
+              ))}
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                max="100"
+                placeholder="custom"
+                value={customRadius}
+                onChange={handleCustomRadius}
+                style={{ ...input, width: 100 }}
+                aria-label="Custom radius in miles"
+              />
+              <span style={{ fontSize: 11, color: C.gray500 }}>
+                Showing {nearestRows.length} of {withinRadiusRows.length} workspace site
+                {withinRadiusRows.length === 1 ? "" : "s"} within {radius} mi (top {NEAREST_TABLE_LIMIT}).
+              </span>
+            </div>
+
+            {!hasValidCoords(selected) ? (
+              <div style={{ fontSize: 11, color: C.gray500 }}>
+                Selected site has no coordinates; cannot compute distance pairs.
+              </div>
+            ) : nearestRows.length === 0 ? (
+              <div style={{ fontSize: 11, color: C.gray500 }}>No nearby workspace records.</div>
+            ) : (
+              <div style={tableWrap}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <Th>Distance</Th>
+                      <Th>Site Name</Th>
+                      <Th>CE / Sponsor</Th>
+                      <Th>Source</Th>
+                      <Th>Same Block Group</Th>
+                      <Th>Same Tract</Th>
+                      <Th>Status</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {nearestRows.map((np, i) => (
+                      <tr key={np.other.id} style={{ background: i % 2 ? C.gray50 : C.white }}>
+                        <Td
+                          danger={np.dist < CONFLICT_MI}
+                          warn={np.dist >= CONFLICT_MI && np.dist < CAUTION_MI}
+                        >
+                          <strong>{np.dist.toFixed(2)} mi</strong>
+                        </Td>
+                        <Td>{np.other.name}</Td>
+                        <Td style={{ fontSize: 11 }}>{np.other.ce}</Td>
+                        <Td style={{ fontSize: 11 }}>{np.other.source || "Manual Entry"}</Td>
+                        <Td>
+                          {np.sameCbg ? (
+                            <Badge color="navy">SAME BLOCK GROUP</Badge>
+                          ) : (
+                            <span style={{ color: C.gray500, fontSize: 11 }}>—</span>
+                          )}
+                        </Td>
+                        <Td>
+                          {np.sameTract ? (
+                            <Badge color="navy">SAME CENSUS TRACT</Badge>
+                          ) : (
+                            <span style={{ color: C.gray500, fontSize: 11 }}>—</span>
+                          )}
+                        </Td>
+                        <Td>
+                          <Badge
+                            color={
+                              np.status === PAIR_STATUS.WITHIN_2
+                                ? "red"
+                                : np.status === PAIR_STATUS.VERIFY
+                                  ? "yellow"
+                                  : "green"
+                            }
+                          >
+                            {np.status}
+                          </Badge>
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -388,59 +691,6 @@ export default function GeoProfileTab({
                         <Td style={{ fontSize: 11 }}>{s.source || "Manual Entry"}</Td>
                         <Td style={{ fontSize: 11 }}>{s.censusTractGEOID}</Td>
                         <Td style={{ fontSize: 11 }}>{s.censusBlockGroupGEOID}</Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          <div style={card}>
-            <SectionTitle>Nearby workspace sites by distance</SectionTitle>
-            {!hasValidCoords(selected) ? (
-              <div style={{ fontSize: 11, color: C.gray500 }}>
-                Selected site has no coordinates; cannot compute distance pairs.
-              </div>
-            ) : nearbyPairs.length === 0 ? (
-              <div style={{ fontSize: 11, color: C.gray500 }}>
-                No other workspace sites within {CAUTION_MI.toFixed(1)} miles.
-              </div>
-            ) : (
-              <div style={tableWrap}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      <Th>Other Site ID</Th>
-                      <Th>Other Site Name</Th>
-                      <Th>Distance</Th>
-                      <Th>Status</Th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {nearbyPairs.map((np, i) => (
-                      <tr key={np.other.id} style={{ background: i % 2 ? C.gray50 : C.white }}>
-                        <Td>{np.other.id}</Td>
-                        <Td>{np.other.name}</Td>
-                        <Td
-                          danger={np.dist < CONFLICT_MI}
-                          warn={np.dist >= CONFLICT_MI && np.dist < CAUTION_MI}
-                        >
-                          <strong>{np.dist.toFixed(2)} mi</strong>
-                        </Td>
-                        <Td>
-                          <Badge
-                            color={
-                              np.status === PAIR_STATUS.WITHIN_2
-                                ? "red"
-                                : np.status === PAIR_STATUS.VERIFY
-                                  ? "yellow"
-                                  : "green"
-                            }
-                          >
-                            {np.status}
-                          </Badge>
-                        </Td>
                       </tr>
                     ))}
                   </tbody>

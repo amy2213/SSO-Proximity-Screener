@@ -22,7 +22,7 @@ import SiteWorkspaceTab from "./tabs/SiteWorkspaceTab.jsx";
 import TdaImportTab from "./tabs/TdaImportTab.jsx";
 import { lookupCensusGeographiesForSite } from "./utils/censusGeographies.js";
 import { hasValidCoords, isBlank, toNumberOrBlank } from "./utils/coords.js";
-import { csvEscape, normalizeHeader, parseCSVLine } from "./utils/csv.js";
+import { downloadCSV, normalizeHeader, parseCSVLine } from "./utils/csv.js";
 import { haversine } from "./utils/distance.js";
 import { geocodeAddress, sleep } from "./utils/geocode.js";
 import { getLocationQaFlags } from "./utils/locationQa.js";
@@ -49,6 +49,7 @@ export default function App() {
   const [tdaSelectedIds, setTdaSelectedIds] = useState(() => new Set());
   const [tdaStatus, setTdaStatus] = useState(null);
   const [tdaLoading, setTdaLoading] = useState(false);
+  const [tdaSkippedDetails, setTdaSkippedDetails] = useState([]);
   const [selectedGeoSiteId, setSelectedGeoSiteId] = useState(null);
   const [geoLookupBusy, setGeoLookupBusy] = useState(false);
   const [geoLookupProgress, setGeoLookupProgress] = useState({
@@ -164,6 +165,10 @@ export default function App() {
     const geoLookupsCompleted = activeSites.filter((s) => s.geoLookupStatus === "Looked Up").length;
     const withCensusTract = activeSites.filter((s) => s.censusTractGEOID).length;
     const withCensusBlockGroup = activeSites.filter((s) => s.censusBlockGroupGEOID).length;
+    const totalQaFlags = geocodeFlags.reduce(
+      (sum, g) => sum + (Array.isArray(g.qaFlags) ? g.qaFlags.length : 0),
+      0,
+    );
     const needsManualVerification = activeSites.filter((s) => {
       if (!hasValidCoords(s)) return true;
       const status = s.geocodeStatus;
@@ -208,6 +213,7 @@ export default function App() {
       geoLookupsCompleted,
       withCensusTract,
       withCensusBlockGroup,
+      totalQaFlags,
       needsManualVerification,
       multiNearby,
       closestPairs,
@@ -245,22 +251,7 @@ export default function App() {
     setSites(SAMPLE);
   };
 
-  const exportCSV = (rows, headers, filename) => {
-    const csv = [
-      headers.join(","),
-      ...rows.map((row) => headers.map((h) => csvEscape(row[h])).join(",")),
-    ].join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-
-    a.href = url;
-    a.download = filename;
-    a.click();
-
-    URL.revokeObjectURL(url);
-  };
+  const exportCSV = downloadCSV;
 
   const siteHeaders = [
     "Site ID",
@@ -303,10 +294,11 @@ export default function App() {
     "Census Block GEOID",
     "Census Place GEOID",
     "Census Place Name",
+    "QA Flags",
   ];
 
   const exportSites = () => {
-    const rows = activeSites.map((s) => ({
+    const rows = geocodeFlags.map((s) => ({
       "Site ID": s.id,
       "CE Name": s.ce,
       "Site Name": s.name,
@@ -347,6 +339,9 @@ export default function App() {
       "Census Block GEOID": s.censusBlockGEOID || "",
       "Census Place GEOID": s.censusPlaceGEOID || "",
       "Census Place Name": s.censusPlaceName || "",
+      "QA Flags": Array.isArray(s.qaFlags)
+        ? s.qaFlags.map((f) => f.label).join("; ")
+        : "",
     }));
 
     exportCSV(rows, siteHeaders, "sso_sites.csv");
@@ -363,19 +358,31 @@ export default function App() {
       "Distance (mi)",
       "Status",
       "Shared CE",
+      "Same Block Group",
+      "Same Census Tract",
     ];
 
-    const rows = pairs.map((p) => ({
-      "Site A ID": p.siteA.id,
-      "Site A Name": p.siteA.name,
-      "Site A Address": p.addrA,
-      "Site B ID": p.siteB.id,
-      "Site B Name": p.siteB.name,
-      "Site B Address": p.addrB,
-      "Distance (mi)": p.dist != null ? p.dist.toFixed(2) : "",
-      Status: p.status,
-      "Shared CE": p.sharedCE ? "YES" : "",
-    }));
+    const rows = pairs.map((p) => {
+      const aCbg = (p.siteA.censusBlockGroupGEOID || "").toString().trim();
+      const bCbg = (p.siteB.censusBlockGroupGEOID || "").toString().trim();
+      const aTract = (p.siteA.censusTractGEOID || "").toString().trim();
+      const bTract = (p.siteB.censusTractGEOID || "").toString().trim();
+      const sameCbg = aCbg && bCbg && aCbg === bCbg;
+      const sameTract = aTract && bTract && aTract === bTract;
+      return {
+        "Site A ID": p.siteA.id,
+        "Site A Name": p.siteA.name,
+        "Site A Address": p.addrA,
+        "Site B ID": p.siteB.id,
+        "Site B Name": p.siteB.name,
+        "Site B Address": p.addrB,
+        "Distance (mi)": p.dist != null ? p.dist.toFixed(2) : "",
+        Status: p.status,
+        "Shared CE": p.sharedCE ? "YES" : "",
+        "Same Block Group": sameCbg ? "YES" : "",
+        "Same Census Tract": sameTract ? "YES" : "",
+      };
+    });
 
     exportCSV(rows, headers, "sso_distance_pairs.csv");
   };
@@ -737,6 +744,7 @@ export default function App() {
   const searchTdaImport = useCallback(async () => {
     setTdaLoading(true);
     setTdaStatus({ error: false, text: "Querying TDA Open Data..." });
+    setTdaSkippedDetails([]);
     const result = await searchTdaSites(tdaQuery, tdaLimit);
     setTdaResults(result.records);
     setTdaSelectedIds(new Set());
@@ -767,6 +775,7 @@ export default function App() {
     setTdaResults([]);
     setTdaSelectedIds(new Set());
     setTdaStatus(null);
+    setTdaSkippedDetails([]);
   }, []);
 
   const importTdaRecordsInternal = useCallback(
@@ -785,8 +794,10 @@ export default function App() {
       const normName = (s) => (s?.name || "").toString().toUpperCase().replace(/\s+/g, " ").trim();
 
       let imported = 0;
-      let skippedDup = 0;
+      let skippedDupDataset = 0;
+      let skippedDupNameAddr = 0;
       let skippedCapacity = 0;
+      const skippedDetail = [];
 
       setSites((prev) => {
         const existingDatasetKeys = new Set(
@@ -808,8 +819,10 @@ export default function App() {
 
         for (const rec of records) {
           const mapped = mapTdaRecordToSite(rec);
+          const displayName = mapped.name || mapped.id || "(unknown)";
           if (!mapped.id) {
-            skippedDup += 1;
+            skippedDupDataset += 1;
+            skippedDetail.push({ name: displayName, reason: "Missing source record ID" });
             continue;
           }
 
@@ -817,15 +830,27 @@ export default function App() {
           const nameAddrKey = `${normName(mapped)}::${cleanAddrParts(mapped)}`;
 
           if (existingDatasetKeys.has(datasetKey) || seenInBatchDatasetKeys.has(datasetKey)) {
-            skippedDup += 1;
+            skippedDupDataset += 1;
+            skippedDetail.push({
+              name: displayName,
+              reason: "Duplicate source record ID",
+            });
             continue;
           }
           if (existingNameAddrKeys.has(nameAddrKey) || seenInBatchNameAddrKeys.has(nameAddrKey)) {
-            skippedDup += 1;
+            skippedDupNameAddr += 1;
+            skippedDetail.push({
+              name: displayName,
+              reason: "Duplicate site name + address",
+            });
             continue;
           }
           if (capacityRemaining <= 0) {
             skippedCapacity += 1;
+            skippedDetail.push({
+              name: displayName,
+              reason: `Workspace at capacity (max ${MAX_SITE_ROWS} rows)`,
+            });
             continue;
           }
 
@@ -842,6 +867,9 @@ export default function App() {
         const filled = prev.filter((s) => s.id && s.id.toString().trim());
         return [...filled, ...additions, ...blanks];
       });
+
+      const skippedDup = skippedDupDataset + skippedDupNameAddr;
+      setTdaSkippedDetails(skippedDetail);
 
       const parts = [`Imported ${imported} record${imported === 1 ? "" : "s"}`];
       parts.push(`skipped ${skippedDup} duplicate${skippedDup === 1 ? "" : "s"}`);
@@ -1124,6 +1152,7 @@ export default function App() {
             tdaSelectedIds={tdaSelectedIds}
             tdaStatus={tdaStatus}
             tdaLoading={tdaLoading}
+            tdaSkippedDetails={tdaSkippedDetails}
             setTdaQuery={setTdaQuery}
             setTdaLimit={setTdaLimit}
             searchTdaImport={searchTdaImport}

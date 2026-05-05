@@ -34,3 +34,20 @@ export function normalizeHeader(value) {
     .trim()
     .toLowerCase();
 }
+
+export function downloadCSV(rows, headers, filename) {
+  const csv = [
+    headers.join(","),
+    ...rows.map((row) => headers.map((h) => csvEscape(row[h])).join(",")),
+  ].join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  URL.revokeObjectURL(url);
+}
